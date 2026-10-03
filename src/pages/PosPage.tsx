@@ -301,8 +301,8 @@ export const PosPage: React.FC = () => {
   }) => {
     try {
       const saleRes = await salesService.createSale({
-        cashierId: currentUser.id,
-        cashierName: currentUser.name,
+        cashierId: currentUser?.id ?? '',
+        cashierName: currentUser?.name ?? '',
         customerId: customer.id,
         customerName: customer.name,
         customerPhone: customer.phone,

@@ -339,10 +339,13 @@ def test_sales_list_returns_rupee_view(client, cashier):
     data = response.json()["data"]
     assert data["total"] == 1
     item = data["items"][0]
-    assert item["total"] == 80.0
-    assert item["subtotal"] == 80.0
-    assert item["tax"] == 17.5
-    assert item["payment_method"] == "CASH"
+    # List rows are full receipts so the UI never has to re-fetch line items.
+    assert item["view"]["total"] == 80.0
+    assert item["view"]["subtotal"] == 80.0
+    assert item["view"]["taxAmount"] == 17.5
+    assert item["payment"]["payment_method"] == "CASH"
+    assert len(item["lines"]) == 1
+    assert item["lines"][0]["product_name_snapshot"] == "Coca Cola 750ml Bottle"
 
 
 # ----------------------------------------------------------- multi-line GST

@@ -109,27 +109,23 @@ def _parse_amount(value: Any, field: str) -> int:
 
 # ------------------------------------------------------------- receipt
 
-def _receipt(conn: sqlite3.Connection, sale_id: str) -> dict[str, Any]:
-    sale = conn.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
-    if sale is None:
-        raise ApiError(404, "Sale not found")
-    lines = conn.execute(
-        "SELECT * FROM sale_lines WHERE sale_id = ? ORDER BY rowid", (sale_id,)
-    ).fetchall()
-    payments = conn.execute(
-        "SELECT * FROM payments WHERE sale_id = ? ORDER BY rowid", (sale_id,)
-    ).fetchall()
-    cashier = conn.execute(
-        "SELECT display_name, username FROM users WHERE id = ?", (sale["created_by"],)
-    ).fetchone()
-
+def _build_receipt(
+    sale: sqlite3.Row,
+    line_rows: list[sqlite3.Row],
+    payment_rows: list[sqlite3.Row],
+    cashier_name: str | None,
+) -> dict[str, Any]:
     line_items = []
-    for ln in lines:
+    for ln in line_rows:
         item = {k: ln[k] for k in ln.keys()}
         item["taxable_paise"] = item["line_total_paise"] - item["tax_paise"]
         line_items.append(item)
 
-    payment = {k: payments[0][k] for k in payments[0].keys()} if payments else None
+    payment = (
+        {k: payment_rows[0][k] for k in payment_rows[0].keys()}
+        if payment_rows
+        else None
+    )
     cgst, sgst = split_cgst_sgst(int(sale["tax_paise"]))
     total = int(sale["total_paise"])
     received = int(payment["amount_paise"]) if payment else total
@@ -144,7 +140,7 @@ def _receipt(conn: sqlite3.Connection, sale_id: str) -> dict[str, Any]:
         "round_off_paise": int(sale["round_off_paise"]),
         "additional_charges_paise": int(sale["additional_charges_paise"]),
         "change_due_paise": max(0, received - total),
-        "cashier_name": cashier["display_name"] if cashier else None,
+        "cashier_name": cashier_name,
         # Rupee view-model for the existing UI (money stays paise server-side).
         "view": {
             "billNo": sale["bill_no"],
@@ -173,6 +169,22 @@ def _receipt(conn: sqlite3.Connection, sale_id: str) -> dict[str, Any]:
     }
 
 
+def _receipt(conn: sqlite3.Connection, sale_id: str) -> dict[str, Any]:
+    sale = conn.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
+    if sale is None:
+        raise ApiError(404, "Sale not found")
+    lines = conn.execute(
+        "SELECT * FROM sale_lines WHERE sale_id = ? ORDER BY rowid", (sale_id,)
+    ).fetchall()
+    payments = conn.execute(
+        "SELECT * FROM payments WHERE sale_id = ? ORDER BY rowid", (sale_id,)
+    ).fetchall()
+    cashier = conn.execute(
+        "SELECT display_name, username FROM users WHERE id = ?", (sale["created_by"],)
+    ).fetchone()
+    return _build_receipt(sale, lines, payments, cashier["display_name"] if cashier else None)
+
+
 def get_sale(conn: sqlite3.Connection, reference: str) -> dict[str, Any]:
     row = conn.execute(
         "SELECT id FROM sales WHERE id = ? OR bill_no = ? OR client_sale_id = ?",
@@ -198,29 +210,48 @@ def list_sales(
     total = conn.execute(f"SELECT COUNT(*) FROM sales{clause}", params).fetchone()[0]
     rows = conn.execute(
         f"""
-        SELECT s.id, s.bill_no, s.customer_name, s.customer_phone, s.subtotal_paise,
-               s.discount_paise, s.tax_paise, s.total_paise, s.status, s.created_at,
-               s.created_by, u.display_name AS cashier_name
-        FROM sales s LEFT JOIN users u ON u.id = s.created_by
+        SELECT * FROM sales s
         {clause}
         ORDER BY s.created_at DESC, s.id DESC
         LIMIT ? OFFSET ?
         """,
         [*params, page_size, (page - 1) * page_size],
     ).fetchall()
-    items = []
-    for r in rows:
-        item = {k: r[k] for k in r.keys()}
-        payment = conn.execute(
-            "SELECT payment_method, amount_paise FROM payments WHERE sale_id = ? LIMIT 1",
-            (r["id"],),
+
+    # Batch-load lines + payments for the whole page (no N+1).
+    sale_ids = [r["id"] for r in rows]
+    lines_by_sale: dict[str, list[sqlite3.Row]] = {sid: [] for sid in sale_ids}
+    payments_by_sale: dict[str, list[sqlite3.Row]] = {sid: [] for sid in sale_ids}
+    if sale_ids:
+        ph = ",".join("?" for _ in sale_ids)
+        for ln in conn.execute(
+            f"SELECT * FROM sale_lines WHERE sale_id IN ({ph}) ORDER BY rowid",
+            sale_ids,
+        ).fetchall():
+            lines_by_sale[ln["sale_id"]].append(ln)
+        for pm in conn.execute(
+            f"SELECT * FROM payments WHERE sale_id IN ({ph}) ORDER BY rowid",
+            sale_ids,
+        ).fetchall():
+            payments_by_sale[pm["sale_id"]].append(pm)
+
+    cashier_by_id: dict[str, str] = {}
+    for uid in {r["created_by"] for r in rows}:
+        row = conn.execute(
+            "SELECT display_name FROM users WHERE id = ?", (uid,)
         ).fetchone()
-        item["payment_method"] = payment["payment_method"] if payment else None
-        item["total"] = _rupees(r["total_paise"])
-        item["subtotal"] = _rupees(r["subtotal_paise"])
-        item["tax"] = _rupees(r["tax_paise"])
-        item["discount"] = _rupees(r["discount_paise"])
-        items.append(item)
+        if row:
+            cashier_by_id[uid] = row["display_name"]
+
+    items = [
+        _build_receipt(
+            r,
+            lines_by_sale.get(r["id"], []),
+            payments_by_sale.get(r["id"], []),
+            cashier_by_id.get(r["created_by"]),
+        )
+        for r in rows
+    ]
     return {"items": items, "total": int(total), "page": page, "page_size": page_size}
 
 

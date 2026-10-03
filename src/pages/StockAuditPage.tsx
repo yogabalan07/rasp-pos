@@ -69,7 +69,6 @@ export const StockAuditPage: React.FC = () => {
           p.stock,
           'Physical audit reconciliation'
         );
-        await productsService.updateStock(p.id, variance);
         adjustmentsMade++;
       }
     }

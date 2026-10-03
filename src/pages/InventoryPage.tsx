@@ -66,7 +66,6 @@ export const InventoryPage: React.FC = () => {
       adjustmentReason
     );
 
-    await productsService.updateStock(selectedProduct.id, delta);
     showToast(`Stock updated for ${selectedProduct.name}`, 'success');
     setIsAdjustOpen(false);
     loadData();

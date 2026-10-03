@@ -1,6 +1,15 @@
 # YB INVENTORY & POS
 
-**YB Inventory & POS** is a modern, commercial-grade Point of Sale (POS) and Inventory Management web application engineered to operate with an offline-first architecture on a **Raspberry Pi 3B+ Edge Server** while synchronizing with a **Firebase Cloud** backend.
+**YB Inventory & POS** is a commercial-grade Point of Sale (POS) and Inventory
+Management web application built for a **Raspberry Pi 3B+ edge server** with an
+offline-first architecture. The shop floor keeps billing when the internet does
+not; a **Firebase Cloud** sync layer is planned for a later phase.
+
+> **Current status: Phase 1 complete** — real FastAPI + SQLite backend, real
+> auth/sessions/RBAC, real products & inventory, atomic POS sales with
+> idempotency and bill numbers. See **[PHASE1.md](./PHASE1.md)** for the API,
+> permission matrix, deployment steps and the honest list of what is *not* built
+> yet (sync, printing, returns, reports, AI).
 
 ---
 
@@ -10,24 +19,25 @@
                  INTERNET
                     │
                     ▼
-              FIREBASE CLOUD
-              (Firestore DB)
+              FIREBASE CLOUD          (Phase 2+ — not wired yet)
                     ▲
                     │
-           AUTO DIFFERENTIAL SYNC
+           OUTBOX-DRIVEN SYNC        (outbox rows are queued, not consumed)
                     │
                     ▼
           RASPBERRY PI 3B+ EDGE
-         (10.205.100.50 / SQLite)
+        FastAPI + SQLite (WAL)  ← transaction authority
                     │
           ┌─────────┼─────────┐
           ▼         ▼         ▼
      POS Station 1  POS 2   ADMIN / OWNER
 ```
 
-- **Edge Server**: Runs locally on Raspberry Pi 3B+ with SQLite, serving local POS terminals even during complete internet failure.
-- **Cloud Backend**: Synchronizes with Firebase Cloud Firestore for multi-branch consolidation, remote owner analytics, and cloud backups.
-- **Frontend Service Layer**: Isolated in `src/services/` with unified API contracts ready to be connected to local SQLite REST endpoints and Firebase SDK.
+- **Edge server**: FastAPI + SQLite WAL on the Pi. Local POS terminals keep
+  billing during a complete internet failure.
+- **Single origin**: the built SPA and `/api` are served by nginx from one
+  origin, so the HttpOnly session cookie stays `SameSite=Lax`.
+- **Money**: integer **paise** everywhere on the wire; prices are GST-inclusive.
 
 ---
 
@@ -35,75 +45,101 @@
 
 1. **High-Speed POS Billing (`/pos`)**:
    - Barcode scanning with instant quantity increments
-   - SKU and name quick search
-   - Category button filters
+   - SKU and name quick search, category button filters
    - Inline cart editing: `[-] Qty [+]`, item discounts, GST calculations
    - Customer selection (Walk-in or registered)
-   - Multi-tender checkout: **Cash, UPI QR, Card, Khata Credit, Split Payment**
+   - Checkout tenders: **Cash, UPI QR, Card, Khata Credit**
+     *(split payment: TODO phase 2)*
    - Immediate change calculation
-   - Hold & Resume bills queue (F4 / F5)
-   - Printable Thermal Receipt (58mm/80mm) and A4 Tax Invoice with CGST/SGST breakdown
+   - Hold & resume bills queue (F4 / F5) — browser-local for now
+   - Printable-looking thermal (58mm/80mm) and A4 tax invoice layouts
+     *(actual printing: TODO phase 2)*
 
 2. **Keyboard Shortcuts**:
-   - `F1` : New Bill / Clear Cart
-   - `F2` : Focus Product Search / Barcode Input
-   - `F3` : Customer Select / Quick Add
-   - `F4` : Hold Current Bill
-   - `F5` : Recall Held Bills
-   - `F6` : Open Payment Modal
-   - `F7` : Previous Invoices Archive
-   - `ESC` : Dismiss any active modal
+   - `F1` New Bill · `F2` Focus search/barcode · `F3` Customer select
+   - `F4` Hold bill · `F5` Recall held bills · `F6` Payment modal
+   - `F7` Previous invoices · `ESC` Dismiss modal
 
 3. **Offline-First Resilience**:
-   - Persistent TopBar telemetry:
-     - 🟢 **Local Server**: 10.205.100.50 Online
-     - 🟢 **Cloud**: Connected or 🔴 Offline
-     - 🟢 **Sync**: Synchronized / 🔄 Syncing / 🟠 Pending
-   - **Interactive Simulation**: Click `[ Simulate Offline ]` in the top bar to test immediate disconnect. POS continues billing locally, incrementing the pending queue. Click `[ Restore Internet ]` to simulate differential cloud replay.
+   - Persistent TopBar telemetry for local/cloud/sync state
+   - `[ Simulate Offline ]` / `[ Restore Internet ]` toggles so you can rehearse
+     a disconnect; sales still commit to local SQLite either way
 
 4. **Catalog & Inventory Master**:
-   - HSN codes, Indian GST slabs (0%, 5%, 12%, 18%, 28%)
-   - Batch & Expiry tracking with **FEFO** (First Expiry First Out) prioritization
-   - Stock valuation (Cost vs Retail projection)
-   - Physical stock counting with barcode scanner audit reconciliation
-   - Inter-warehouse transfers
+   - HSN codes and Indian GST slabs (0/5/12/18/28%)
+   - Stock valuation (cost vs retail)
+   - Physical stock counting with audited adjustment movements
+   - Batch/expiry (FEFO) and warehouses: UI present, **TODO phase 2**
 
 5. **Financials & Khata**:
-   - Customer Credit (Khata) ledger with credit limits and payment collection
-   - Cash register with opening float, petty cash expenses, and variance tracking
-   - Shift management with **X-Report** (mid-day reading) and **Z-Report** (end-of-day drawer lock)
+   - Customer credit (Khata) ledger, cash register, shifts with X/Z reports:
+     UI present, **TODO phase 2** (no server backing yet)
 
-6. **Role-Based Access Control (Demo Switcher in Top Bar)**:
-   - `OWNER`: Full executive control, multi-branch, cloud settings, analytics
-   - `ADMIN`: Operational management, pricing slabs, user accounts
-   - `MANAGER`: Store supervision, discounts, audit logs, supplier POs
-   - `CASHIER`: Focused POS billing, customer attachment, returns, till closing
-   - `INVENTORY_MANAGER`: Products, stock audits, batches, warehouses, purchases
-   - `ACCOUNTANT`: GST reports, tax slabs, Khata ledgers, invoices
+6. **Role-Based Access Control (enforced by the API)**:
+   - `OWNER` — everything, incl. users, audit log, outbox retry
+   - `ADMIN` — catalog + stock management, stock audits, outbox read
+   - `CASHIER` — ring up sales, read catalog & inventory
+
+   The old demo role switcher is gone; permissions come from the session.
 
 ---
 
 ## 🛠️ Development & Production Instructions
 
-### Development Server
+### 1. Backend (FastAPI + SQLite)
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Schema creation and seeding happen automatically on first start.
+
+**Seeded logins** (change them before going live):
+
+| Login     | Password     | Role    | PIN  |
+|-----------|--------------|---------|------|
+| `owner`   | `Owner@1234` | OWNER   | 9999 |
+| `admin`   | `Admin@1234` | ADMIN   | 8888 |
+| `cashier` | `Cashier@1234` | CASHIER | 1234 |
+
+### 2. Frontend
+
 ```bash
-# Install dependencies
 npm install
-
-# Start Vite dev server on port 3000
-npm run dev
+npm run dev        # http://localhost:3000 (proxies /api -> 127.0.0.1:8000)
 ```
 
-### Production Build
+### 3. Production build
+
 ```bash
-# Compile and build production bundle
-npm run build
-
-# Preview build locally
-npm run preview
+npm run build      # outputs dist/
 ```
 
-### Type Checking & Linting
+### 4. Type checking
+
 ```bash
-npm run lint
+npm run lint       # tsc --noEmit
 ```
+
+### 5. Tests
+
+```powershell
+cd backend
+.\.venv\Scripts\python -m pytest tests    # 76 tests
+```
+
+### 6. Raspberry Pi deployment
+
+See **[PHASE1.md §6](./PHASE1.md#6-deploying-on-the-raspberry-pi)** —
+`backend/deploy/yb-pos-api.service` (systemd) and
+`backend/deploy/nginx-yb-pos.conf` (SPA + `/api` reverse proxy) are included.
+
+---
+
+## 📁 Further reading
+
+- [PHASE1.md](./PHASE1.md) — API reference, permission matrix, rules, TODOs
+- [PHASE1_BASELINE.md](./PHASE1_BASELINE.md) — pre-Phase-1 code audit

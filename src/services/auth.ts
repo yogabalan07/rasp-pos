@@ -1,73 +1,42 @@
-import { User, UserRole, Shift } from '../types';
-import { delay, createResponse, ApiResponse } from './api';
+import { User, Shift } from '../types';
+import { ApiResponse, apiGet, apiPost, ApiError } from './api';
 
-export const SYSTEM_USERS: User[] = [
-  {
-    id: 'usr-owner',
-    name: 'Yogabalan K.',
-    email: 'yogabalan2007yoga@gmail.com',
-    pin: '9999',
-    role: 'OWNER',
-    avatarUrl: '/src/assets/images/avatar_cashier_1791045612424.jpg',
-    branchId: 'br-1',
-    branchName: 'Indiranagar Flagship',
-    phone: '+91 98450 00111',
-  },
-  {
-    id: 'usr-admin',
-    name: 'Vikramaditya S.',
-    email: 'admin@ybinventory.local',
-    pin: '8888',
-    role: 'ADMIN',
-    branchId: 'br-1',
-    branchName: 'Indiranagar Flagship',
-    phone: '+91 98450 00222',
-  },
-  {
-    id: 'usr-mgr',
-    name: 'Karthik Rao',
-    email: 'store.manager@ybinventory.local',
-    pin: '5555',
-    role: 'MANAGER',
-    branchId: 'br-1',
-    branchName: 'Indiranagar Flagship',
-    phone: '+91 98450 00333',
-  },
-  {
-    id: 'usr-cashier',
-    name: 'Rohan Sharma',
-    email: 'rohan.pos@ybinventory.local',
-    pin: '1234',
-    role: 'CASHIER',
-    avatarUrl: '/src/assets/images/avatar_cashier_1791045612424.jpg',
-    branchId: 'br-1',
-    branchName: 'Indiranagar Flagship',
-    phone: '+91 98450 00444',
-  },
-  {
-    id: 'usr-inv',
-    name: 'Santhosh M.',
-    email: 'inventory@ybinventory.local',
-    pin: '2222',
-    role: 'INVENTORY_MANAGER',
-    branchId: 'br-1',
-    branchName: 'Indiranagar Flagship',
-    phone: '+91 98450 00555',
-  },
-  {
-    id: 'usr-acc',
-    name: 'Meenakshi Iyer',
-    email: 'finance@ybinventory.local',
-    pin: '3333',
-    role: 'ACCOUNTANT',
-    branchId: 'br-1',
-    branchName: 'Indiranagar Flagship',
-    phone: '+91 98450 00666',
-  }
-];
+/** Shape returned by `/api/auth/*` for a signed-in user. */
+export interface SessionUser {
+  id: string;
+  username: string;
+  email: string | null;
+  role: 'OWNER' | 'ADMIN' | 'CASHIER';
+  displayName: string;
+  permissions: string[];
+  isActive: boolean;
+  createdAt: string;
+}
 
-let currentUser: User = SYSTEM_USERS[0]; // Start as Owner for full access
+const MAIN_BRANCH_ID = 'br-1';
+const MAIN_BRANCH_NAME = 'Indiranagar Flagship Store';
 
+export function toAppUser(sessionUser: SessionUser): User {
+  return {
+    id: sessionUser.id,
+    name: sessionUser.displayName || sessionUser.username,
+    email: sessionUser.email || '',
+    // The server never returns credential material.
+    pin: '',
+    role: sessionUser.role,
+    branchId: MAIN_BRANCH_ID,
+    branchName: MAIN_BRANCH_NAME,
+    phone: '',
+  };
+}
+
+let currentUser: User | null = null;
+let currentPermissions: string[] = [];
+
+/**
+ * TODO(phase-2): shifts are still client-local demo state.
+ * Phase 1 has no shift/dues API on the Pi.
+ */
 let currentShift: Shift = {
   id: 'shift-101',
   shiftNumber: 'SHIFT-2026-10-03-01',
@@ -79,36 +48,80 @@ let currentShift: Shift = {
   upiSales: 3840.00,
   cardSales: 1250.00,
   creditSales: 0,
-  cashExpenses: 150.00, // Tea/Coffee petty cash
+  cashExpenses: 150.00,
   expectedCash: 3270.00,
   status: 'OPEN',
 };
 
+function adopt(sessionUser: SessionUser): User {
+  currentUser = toAppUser(sessionUser);
+  currentPermissions = sessionUser.permissions || [];
+  return currentUser;
+}
+
 export const authService = {
-  getCurrentUser(): User {
+  getCurrentUser(): User | null {
     return currentUser;
   },
 
-  switchRole(role: UserRole): User {
-    const user = SYSTEM_USERS.find(u => u.role === role) || currentUser;
-    currentUser = { ...user };
-    return currentUser;
+  getPermissions(): string[] {
+    return currentPermissions;
   },
 
-  async loginWithEmail(email: string, _password: string): Promise<ApiResponse<User>> {
-    await delay(120);
-    const user = SYSTEM_USERS.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (!user) throw new Error('Invalid email or password');
-    currentUser = user;
-    return createResponse(user, 'Logged in successfully');
+  can(permission: string): boolean {
+    return currentPermissions.includes(permission);
+  },
+
+  /** Restore the session from the HttpOnly cookie; returns null when signed out. */
+  async fetchSession(): Promise<ApiResponse<User | null>> {
+    try {
+      const res = await apiGet<SessionUser>('/auth/session');
+      if (!res.data) {
+        currentUser = null;
+        currentPermissions = [];
+        return { data: null, success: true, source: 'LOCAL_EDGE' };
+      }
+      return { data: adopt(res.data), success: true, source: 'LOCAL_EDGE' };
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        currentUser = null;
+        currentPermissions = [];
+        return { data: null, success: true, source: 'LOCAL_EDGE' };
+      }
+      throw err;
+    }
+  },
+
+  async login(identifier: string, password: string): Promise<ApiResponse<User>> {
+    const res = await apiPost<SessionUser>('/auth/login', { identifier, password });
+    return { data: adopt(res.data), success: true, message: res.message, source: 'LOCAL_EDGE' };
   },
 
   async loginWithPin(pin: string): Promise<ApiResponse<User>> {
-    await delay(100);
-    const user = SYSTEM_USERS.find(u => u.pin === pin);
-    if (!user) throw new Error('Invalid Cashier PIN. Hint: Try 1234, 9999, 8888, 5555');
-    currentUser = user;
-    return createResponse(user, `Welcome back, ${user.name}`);
+    const res = await apiPost<SessionUser>('/auth/login/pin', { pin });
+    return { data: adopt(res.data), success: true, message: res.message, source: 'LOCAL_EDGE' };
+  },
+
+  async logout(): Promise<void> {
+    try {
+      await apiPost('/auth/logout');
+    } finally {
+      currentUser = null;
+      currentPermissions = [];
+    }
+  },
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<ApiResponse<null>> {
+    const res = await apiPost<null>('/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    return res as ApiResponse<null>;
+  },
+
+  clearSession(): void {
+    currentUser = null;
+    currentPermissions = [];
   },
 
   getCurrentShift(): Shift {
@@ -132,8 +145,8 @@ export const authService = {
     currentShift = {
       id: `shift-${Date.now()}`,
       shiftNumber: `SHIFT-${new Date().toISOString().slice(0, 10)}-${Date.now().toString().slice(-2)}`,
-      cashierId: currentUser.id,
-      cashierName: currentUser.name,
+      cashierId: currentUser?.id || 'unknown',
+      cashierName: currentUser?.name || 'Unknown',
       startTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       openingCash,
       cashSales: 0,
@@ -145,5 +158,5 @@ export const authService = {
       status: 'OPEN',
     };
     return currentShift;
-  }
+  },
 };

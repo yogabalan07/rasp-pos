@@ -17,6 +17,13 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      proxy: {
+        // Route API calls to the local Raspberry Pi backend during development.
+        '/api': {
+          target: 'http://127.0.0.1:8000',
+          changeOrigin: false,
+        },
+      },
     },
   };
 });

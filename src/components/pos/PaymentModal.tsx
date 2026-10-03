@@ -5,7 +5,6 @@ import {
   QrCode, 
   CreditCard, 
   FileText, 
-  Layers, 
   Check, 
   X, 
   ArrowRight,
@@ -34,16 +33,12 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 }) => {
   const [method, setMethod] = useState<PaymentMethod>('CASH');
   const [tenderedInput, setTenderedInput] = useState<string>(Math.round(totalAmount).toString());
-  const [splitCash, setSplitCash] = useState<string>('0');
-  const [splitUpi, setSplitUpi] = useState<string>('0');
   const [cardRef, setCardRef] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
 
   useEffect(() => {
     if (isOpen) {
       setTenderedInput(Math.round(totalAmount).toString());
-      setSplitCash(Math.floor(totalAmount / 2).toString());
-      setSplitUpi((totalAmount - Math.floor(totalAmount / 2)).toString());
     }
   }, [isOpen, totalAmount]);
 
@@ -92,13 +87,14 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         {/* Content */}
         <div className="p-5 space-y-4">
           {/* Method Selector Tabs */}
-          <div className="grid grid-cols-5 gap-2">
+          {/* TODO(phase-2): split payments — the Phase 1 API accepts one
+              payment method per bill (CASH / UPI / CARD / CREDIT). */}
+          <div className="grid grid-cols-4 gap-2">
             {[
               { id: 'CASH', label: 'Cash', icon: Banknote },
               { id: 'UPI', label: 'UPI / QR', icon: QrCode },
               { id: 'CARD', label: 'Card', icon: CreditCard },
               { id: 'CREDIT', label: 'Khata', icon: FileText },
-              { id: 'SPLIT', label: 'Split', icon: Layers },
             ].map(m => {
               const Icon = m.icon;
               const isSelected = method === m.id;
@@ -219,35 +215,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
             </div>
           )}
 
-          {/* SPLIT Panel */}
-          {method === 'SPLIT' && (
-            <div className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50/50 p-4 dark:border-neutral-800 dark:bg-neutral-800/40">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-semibold">Cash Portion (₹)</label>
-                  <input
-                    type="number"
-                    value={splitCash}
-                    onChange={e => setSplitCash(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-neutral-300 bg-white p-2 text-sm font-bold font-tabular dark:border-neutral-700 dark:bg-neutral-900 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold">UPI / Online (₹)</label>
-                  <input
-                    type="number"
-                    value={splitUpi}
-                    onChange={e => setSplitUpi(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-neutral-300 bg-white p-2 text-sm font-bold font-tabular dark:border-neutral-700 dark:bg-neutral-900 dark:text-white"
-                  />
-                </div>
-              </div>
-              <div className="flex justify-between text-xs text-neutral-500">
-                <span>Sum: ₹{(parseFloat(splitCash || '0') + parseFloat(splitUpi || '0')).toFixed(2)}</span>
-                <span>Required: ₹{totalAmount.toFixed(2)}</span>
-              </div>
-            </div>
-          )}
+          {/* SPLIT Panel removed for Phase 1 — see the TODO above. */}
         </div>
 
         {/* Modal Footer */}

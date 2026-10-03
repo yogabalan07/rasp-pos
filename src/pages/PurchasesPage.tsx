@@ -85,9 +85,9 @@ export const PurchasesPage: React.FC = () => {
   };
 
   const handleReceiveGoods = async (po: PurchaseOrder) => {
-    // Mark received and restock
+    // Mark received and restock (single audited adjustment per line)
     for (const item of po.items) {
-      await productsService.updateStock(item.productId, item.quantity);
+      await productsService.updateStock(item.productId, item.quantity, `Goods received for ${po.poNumber}`);
     }
     await suppliersService.updatePoStatus(po.id, 'RECEIVED');
     showToast(`Goods received for ${po.poNumber} & inventory restocked`, 'success');
