@@ -56,6 +56,7 @@ export interface Product {
   brand: string;
   categoryId: string;
   categoryName: string;
+  subcategory?: string;
   unit: string;
   hsn: string;
   gstRate: number; // e.g. 5, 12, 18, 28
@@ -198,7 +199,14 @@ export interface StockMovement {
   productId: string;
   productName: string;
   sku: string;
-  type: 'PURCHASE' | 'SALE' | 'RETURN' | 'ADJUSTMENT' | 'TRANSFER_IN' | 'TRANSFER_OUT';
+  type:
+    | 'OPENING_STOCK'
+    | 'PURCHASE'
+    | 'SALE'
+    | 'RETURN'
+    | 'ADJUSTMENT'
+    | 'TRANSFER_IN'
+    | 'TRANSFER_OUT';
   quantityDelta: number;
   previousStock: number;
   newStock: number;

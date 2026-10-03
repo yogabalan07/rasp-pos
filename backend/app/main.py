@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import settings
+from .config import PHASE, settings
 from .database import connect, transaction
 from .db.schema import init_db
 from .db.seed import seed_if_empty
@@ -76,7 +76,7 @@ def create_app() -> FastAPI:
     def root():
         return {
             "service": settings.app_name,
-            "phase": 1,
+            "phase": PHASE,
             "docs": "/docs",
             "health": "/api/health",
         }

@@ -48,6 +48,7 @@ class ProductCreate(ApiModel):
     brand: str = ""
     category_id: str = ""
     category: str = ""
+    subcategory: str = ""
     unit: str = "Piece"
     selling_price_paise: int = Field(ge=0)
     purchase_price_paise: int = Field(default=0, ge=0)
@@ -59,6 +60,10 @@ class ProductCreate(ApiModel):
     min_stock: int = Field(default=0, ge=0)
     batch_tracked: int = 0
     stock: int = Field(default=0, ge=0)
+
+
+class ProductStatusUpdate(ApiModel):
+    is_active: bool
 
 
 class ProductUpdate(ApiModel):
@@ -81,6 +86,7 @@ class ProductUpdate(ApiModel):
     min_stock: Optional[int] = Field(default=None, ge=0)
     batch_tracked: Optional[int] = None
     is_active: Optional[int] = None
+    subcategory: Optional[str] = None
 
 
 # ------------------------------------------------------------- inventory
@@ -89,6 +95,12 @@ class StockAdjustRequest(ApiModel):
     delta: int
     reason: str = Field(min_length=1, max_length=300)
     reason_code: Optional[str] = None
+
+
+class OpeningStockRequest(ApiModel):
+    product_id: Optional[str] = Field(default=None, max_length=64)
+    quantity: int = Field(ge=0, le=1_000_000)
+    reason: Optional[str] = Field(default=None, max_length=300)
 
 
 # ------------------------------------------------------------------ sale

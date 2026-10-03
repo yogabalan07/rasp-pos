@@ -1,5 +1,5 @@
 import { Product, Category } from '../types';
-import { ApiResponse, apiGet, apiPost, apiPatch, apiDelete } from './api';
+import { ApiResponse, apiGet, apiPost, apiPut, apiPatch, apiDelete } from './api';
 
 /** Row shape returned by the local API (all money in integer paise). */
 interface ProductRow {
@@ -10,6 +10,7 @@ interface ProductRow {
   brand: string;
   category_id: string;
   category: string;
+  subcategory: string;
   unit: string;
   selling_price_paise: number;
   purchase_price_paise: number;
@@ -19,9 +20,35 @@ interface ProductRow {
   hsn_code: string;
   image: string | null;
   min_stock: number;
+  reorder_level: number;
   batch_tracked: number;
   is_active: number;
+  created_by?: string | null;
+  updated_by?: string | null;
   stock: number;
+  stock_status: 'IN_STOCK' | 'LOW_STOCK' | 'OUT_OF_STOCK';
+  is_low_stock: boolean;
+}
+
+export interface ProductPage {
+  items: Product[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+}
+
+export interface ProductQuery {
+  q?: string;
+  category?: string;
+  subcategory?: string;
+  brand?: string;
+  sku?: string;
+  barcode?: string;
+  isActive?: boolean;
+  includeInactive?: boolean;
+  page?: number;
+  pageSize?: number;
 }
 
 interface ProductListPayload {
@@ -29,6 +56,7 @@ interface ProductListPayload {
   total: number;
   page: number;
   page_size: number;
+  pages: number;
 }
 
 interface CategoryRow {
@@ -43,8 +71,9 @@ const paise = (rupeeValue: number): number => Math.round(rupeeValue * 100);
 
 function deriveStatus(row: ProductRow): Product['status'] {
   if (!row.is_active) return 'INACTIVE';
-  if (row.stock <= 0) return 'OUT_OF_STOCK';
-  if (row.min_stock > 0 && row.stock <= row.min_stock) return 'LOW_STOCK';
+  // The server owns the stock-status rule — never re-derive it here.
+  if (row.stock_status === 'OUT_OF_STOCK') return 'OUT_OF_STOCK';
+  if (row.stock_status === 'LOW_STOCK') return 'LOW_STOCK';
   return 'ACTIVE';
 }
 
@@ -57,6 +86,7 @@ export function rowToProduct(row: ProductRow): Product {
     brand: row.brand || '',
     categoryId: row.category_id,
     categoryName: row.category,
+    subcategory: row.subcategory || '',
     unit: row.unit,
     hsn: row.hsn_code,
     gstRate: row.gst_rate,
@@ -81,6 +111,7 @@ function toCreatePayload(product: Omit<Product, 'id'>) {
     brand: product.brand || '',
     category_id: product.categoryId || '',
     category: product.categoryName || '',
+    subcategory: product.subcategory || '',
     unit: product.unit || 'Piece',
     selling_price_paise: paise(product.sellingPrice),
     purchase_price_paise: paise(product.purchasePrice || 0),
@@ -96,9 +127,9 @@ function toCreatePayload(product: Omit<Product, 'id'>) {
 }
 
 const UPDATABLE: (keyof Product)[] = [
-  'sku', 'name', 'barcode', 'brand', 'categoryId', 'categoryName', 'unit', 'hsn',
-  'gstRate', 'purchasePrice', 'sellingPrice', 'mrp', 'wholesalePrice', 'minStock',
-  'image', 'batchTracked',
+  'sku', 'name', 'barcode', 'brand', 'categoryId', 'categoryName', 'subcategory',
+  'unit', 'hsn', 'gstRate', 'purchasePrice', 'sellingPrice', 'mrp',
+  'wholesalePrice', 'minStock', 'image', 'batchTracked',
 ];
 
 const MONEY_FIELDS = new Set(['purchasePrice', 'sellingPrice', 'mrp', 'wholesalePrice']);
@@ -109,6 +140,7 @@ const FIELD_MAP: Record<string, string> = {
   brand: 'brand',
   categoryId: 'category_id',
   categoryName: 'category',
+  subcategory: 'subcategory',
   unit: 'unit',
   hsn: 'hsn_code',
   gstRate: 'gst_rate',
@@ -137,7 +169,9 @@ function toUpdatePayload(updates: Partial<Product>) {
 }
 
 /** Server-side catalogue search (single source of truth). */
-async function fetchProducts(params: Record<string, string | number | boolean | undefined> = {}): Promise<Product[]> {
+async function fetchProducts(
+  params: Record<string, string | number | boolean | undefined> = {},
+): Promise<Product[]> {
   const res = await apiGet<ProductListPayload>('/products', {
     page: 1,
     page_size: 500,
@@ -146,7 +180,44 @@ async function fetchProducts(params: Record<string, string | number | boolean | 
   return res.data.items.map(rowToProduct);
 }
 
+function toQuery(
+  query: ProductQuery,
+): Record<string, string | number | boolean | undefined> {
+  return {
+    q: query.q,
+    category: query.category && query.category !== 'cat-all' ? query.category : undefined,
+    subcategory: query.subcategory,
+    brand: query.brand,
+    sku: query.sku,
+    barcode: query.barcode,
+    is_active: query.isActive,
+    include_inactive: query.includeInactive ? true : undefined,
+    page: query.page,
+    page_size: query.pageSize,
+  };
+}
+
+function pageOf(res: ApiResponse<ProductListPayload>): ApiResponse<ProductPage> {
+  return {
+    data: {
+      items: res.data.items.map(rowToProduct),
+      total: res.data.total,
+      page: res.data.page,
+      pageSize: res.data.page_size,
+      pages: res.data.pages,
+    },
+    success: true,
+    message: res.message,
+    source: 'LOCAL_EDGE',
+  };
+}
+
 export const productsService = {
+  /** Server-paginated catalogue list (filters + `pages`). */
+  async listPage(query: ProductQuery = {}): Promise<ApiResponse<ProductPage>> {
+    return pageOf(await apiGet<ProductListPayload>('/products', toQuery(query)));
+  },
+
   async getAll(): Promise<ApiResponse<Product[]>> {
     const items = await fetchProducts();
     return { data: items, success: true, source: 'LOCAL_EDGE' };
@@ -165,6 +236,22 @@ export const productsService = {
       })),
     ];
     return { data: categories, success: true, source: 'LOCAL_EDGE' };
+  },
+
+  async getBrands(): Promise<ApiResponse<string[]>> {
+    const res = await apiGet<{ name: string; item_count: number }[]>('/products/brands');
+    return { data: res.data.map(b => b.name).filter(Boolean), success: true, source: 'LOCAL_EDGE' };
+  },
+
+  async getSubcategories(): Promise<ApiResponse<string[]>> {
+    const res = await apiGet<{ name: string; item_count: number }[]>(
+      '/products/subcategories',
+    );
+    return {
+      data: res.data.map(s => s.name).filter(Boolean),
+      success: true,
+      source: 'LOCAL_EDGE',
+    };
   },
 
   async search(query: string, categoryId?: string): Promise<ApiResponse<Product[]>> {
@@ -193,6 +280,39 @@ export const productsService = {
     const res = await apiPatch<ProductRow>(
       `/products/${encodeURIComponent(id)}`,
       toUpdatePayload(updates),
+    );
+    return {
+      data: rowToProduct(res.data),
+      success: true,
+      message: res.message,
+      source: 'LOCAL_EDGE',
+    };
+  },
+
+  /** Full replacement (`PUT`). Stock is owned by the inventory endpoints. */
+  async replace(
+    id: string,
+    product: Omit<Product, 'id'>,
+  ): Promise<ApiResponse<Product>> {
+    const res = await apiPut<ProductRow>(
+      `/products/${encodeURIComponent(id)}`,
+      toCreatePayload(product),
+    );
+    return {
+      data: rowToProduct(res.data),
+      success: true,
+      message: res.message,
+      source: 'LOCAL_EDGE',
+    };
+  },
+
+  async setStatus(
+    id: string,
+    isActive: boolean,
+  ): Promise<ApiResponse<Product>> {
+    const res = await apiPatch<ProductRow>(
+      `/products/${encodeURIComponent(id)}/status`,
+      { is_active: isActive },
     );
     return {
       data: rowToProduct(res.data),

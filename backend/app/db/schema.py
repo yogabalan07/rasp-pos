@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -55,6 +55,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
 -- ------------------------------------------------------------- products
+-- `subcategory` / `created_by` / `updated_by` were added by migration 2 but are
+-- declared here too so a brand-new database is created in its final shape.
 CREATE TABLE IF NOT EXISTS products (
     id                   TEXT PRIMARY KEY,
     sku                  TEXT NOT NULL UNIQUE,
@@ -63,6 +65,7 @@ CREATE TABLE IF NOT EXISTS products (
     brand                TEXT DEFAULT '',
     category_id          TEXT DEFAULT '',
     category             TEXT DEFAULT '',
+    subcategory          TEXT NOT NULL DEFAULT '',
     unit                 TEXT DEFAULT 'Piece',
     selling_price_paise  INTEGER NOT NULL CHECK (selling_price_paise >= 0),
     purchase_price_paise INTEGER NOT NULL DEFAULT 0 CHECK (purchase_price_paise >= 0),
@@ -75,11 +78,16 @@ CREATE TABLE IF NOT EXISTS products (
     batch_tracked        INTEGER NOT NULL DEFAULT 0,
     is_active            INTEGER NOT NULL DEFAULT 1,
     created_at           TEXT NOT NULL,
-    updated_at           TEXT NOT NULL
+    updated_at           TEXT NOT NULL,
+    created_by           TEXT,
+    updated_by           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
 CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
+-- sku / barcode are UNIQUE columns, so SQLite already maintains an index for
+-- each — do not duplicate them here. The Phase 2 indexes (brand, subcategory)
+-- live in PHASE2_INDEX_SQL: a Phase 1 database does not have the columns yet.
 
 -- ------------------------------------------------------------ inventory
 CREATE TABLE IF NOT EXISTS inventory (
@@ -91,11 +99,16 @@ CREATE TABLE IF NOT EXISTS inventory (
 );
 
 -- ------------------------------------------------------ stock_movements
+-- OPENING_STOCK + the reserved Phase-later types are accepted by the CHECK so
+-- no future table rebuild is needed; the service layer only *writes* the types
+-- it actually implements (see inventory_service.MOVEMENT_TYPES).
 CREATE TABLE IF NOT EXISTS stock_movements (
     id            TEXT PRIMARY KEY,
     product_id    TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    movement_type TEXT NOT NULL CHECK (movement_type IN
-                    ('SALE','PURCHASE','ADJUSTMENT','RETURN')),
+    movement_type TEXT NOT NULL CHECK (movement_type IN (
+                    'OPENING_STOCK','SALE','PURCHASE','ADJUSTMENT','RETURN',
+                    'PURCHASE_RETURN','SALE_RETURN','TRANSFER_IN','TRANSFER_OUT',
+                    'DAMAGE','EXPIRY')),
     quantity      INTEGER NOT NULL,
     reference_type TEXT,
     reference_id  TEXT,
@@ -105,6 +118,8 @@ CREATE TABLE IF NOT EXISTS stock_movements (
     created_by    TEXT REFERENCES users(id)
 );
 CREATE INDEX IF NOT EXISTS idx_movements_product ON stock_movements(product_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_movements_type ON stock_movements(movement_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_movements_created ON stock_movements(created_at);
 
 -- ---------------------------------------------------------------- sales
 CREATE TABLE IF NOT EXISTS sales (
@@ -202,9 +217,89 @@ CREATE TABLE IF NOT EXISTS bill_counters (
 );
 """
 
+MOVEMENT_TYPE_CHECK_SQL = """(
+    'OPENING_STOCK','SALE','PURCHASE','ADJUSTMENT','RETURN',
+    'PURCHASE_RETURN','SALE_RETURN','TRANSFER_IN','TRANSFER_OUT',
+    'DAMAGE','EXPIRY')"""
+
+# Runs AFTER the migrations, because a Phase 1 `products` table has no
+# `subcategory` column until migration 2 adds it.
+PHASE2_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_products_brand ON products(brand);
+CREATE INDEX IF NOT EXISTS idx_products_subcategory ON products(subcategory);
+"""
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column(conn: sqlite3.Connection, table: str, definition: str) -> None:
+    """ALTER TABLE ADD COLUMN is not idempotent — check first."""
+    name = definition.split()[0]
+    if name not in _columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+
+
+def _rebuild_stock_movements(conn: sqlite3.Connection) -> None:
+    """SQLite cannot ALTER a CHECK constraint, so rebuild the table in place.
+
+    Only the `movement_type` whitelist changes; every row is preserved.
+    """
+    conn.executescript(
+        f"""
+        CREATE TABLE stock_movements_v2 (
+            id             TEXT PRIMARY KEY,
+            product_id     TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            movement_type  TEXT NOT NULL CHECK (movement_type IN {MOVEMENT_TYPE_CHECK_SQL}),
+            quantity       INTEGER NOT NULL,
+            reference_type TEXT,
+            reference_id   TEXT,
+            balance_after  INTEGER NOT NULL,
+            reason         TEXT,
+            created_at     TEXT NOT NULL,
+            created_by     TEXT REFERENCES users(id)
+        );
+        INSERT INTO stock_movements_v2
+            (id, product_id, movement_type, quantity, reference_type,
+             reference_id, balance_after, reason, created_at, created_by)
+        SELECT id, product_id, movement_type, quantity, reference_type,
+               reference_id, balance_after, reason, created_at, created_by
+          FROM stock_movements;
+        DROP TABLE stock_movements;
+        ALTER TABLE stock_movements_v2 RENAME TO stock_movements;
+        """
+    )
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_movements_product
+            ON stock_movements(product_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_movements_type
+            ON stock_movements(movement_type, created_at);
+        CREATE INDEX IF NOT EXISTS idx_movements_created
+            ON stock_movements(created_at);
+        """
+    )
+
+
+def migration_2_products_inventory(conn: sqlite3.Connection) -> None:
+    """Phase 2: product subcategory + audit columns, wider movement types."""
+    _add_column(conn, "products", "subcategory TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "products", "created_by TEXT")
+    _add_column(conn, "products", "updated_by TEXT")
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='stock_movements'"
+    ).fetchone()
+    if row is not None and "OPENING_STOCK" not in (row["sql"] or ""):
+        _rebuild_stock_movements(conn)
+
+
 # Ordered, idempotent migrations applied after SCHEMA_SQL.
-MIGRATIONS: list[tuple[str, str]] = [
+# Entries are (target_version, sql_or_callable).
+MIGRATIONS: list[tuple[str, object]] = [
     ("1", "UPDATE schema_meta SET value='1' WHERE key='version'"),
+    ("2", migration_2_products_inventory),
 ]
 
 
@@ -223,11 +318,17 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     for target, sql in MIGRATIONS:
         if version < int(target):
-            conn.execute(sql)
+            if callable(sql):
+                sql(conn)
+            else:
+                conn.executescript(sql)
             conn.execute(
                 "UPDATE schema_meta SET value=? WHERE key='version'", (target,)
             )
             version = int(target)
+
+    # Only now do the Phase 2 columns exist on an upgraded database.
+    conn.executescript(PHASE2_INDEX_SQL)
 
 
 def table_names(conn: sqlite3.Connection) -> list[str]:

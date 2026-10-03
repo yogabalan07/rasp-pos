@@ -19,6 +19,8 @@ export interface ApiResponse<T> {
   success: boolean;
   message?: string;
   source: 'LOCAL_EDGE' | 'CLOUD_FIRESTORE' | 'CACHE';
+  /** Pagination / aggregates returned alongside an array-shaped `data`. */
+  meta?: Record<string, any>;
 }
 
 export const delay = (ms: number = 80): Promise<void> =>
@@ -59,11 +61,14 @@ export function getDeviceId(): string {
 /** Raised for any non-2xx API response. `status` is the HTTP status. */
 export class ApiError extends Error {
   status: number;
+  /** Machine-readable code from the server envelope (e.g. `DUPLICATE_SKU`). */
+  code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -74,6 +79,8 @@ interface Envelope<T> {
   ok: boolean;
   data: T | null;
   message?: string;
+  code?: string;
+  meta?: Record<string, any>;
 }
 
 function buildUrl(path: string, params?: Record<string, string | number | boolean | undefined>): string {
@@ -121,7 +128,7 @@ async function request<T>(
     if (response.status === 401) {
       window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, envelope?.code);
   }
 
   return {
@@ -129,6 +136,7 @@ async function request<T>(
     success: true,
     message: envelope.message,
     source: 'LOCAL_EDGE',
+    meta: envelope.meta,
   };
 }
 
@@ -145,6 +153,10 @@ export function apiPost<T>(path: string, body?: unknown): Promise<ApiResponse<T>
 
 export function apiPatch<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
   return request<T>('PATCH', path, body);
+}
+
+export function apiPut<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
+  return request<T>('PUT', path, body);
 }
 
 export function apiDelete<T>(path: string): Promise<ApiResponse<T>> {

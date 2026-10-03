@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 
-from ..config import settings
+from ..config import PHASE, settings
 from ..dependencies import get_db
 from ..services.outbox_service import counts as outbox_counts
 from ..utils.api import ok
@@ -35,7 +35,7 @@ def health(conn: sqlite3.Connection = Depends(get_db)):
             "error": error,
             "service": "yb-inventory-pos",
             "version": "1.0.0",
-            "phase": 1,
+            "phase": PHASE,
             "environment": settings.env,
             "timestamp": _now(),
         },
@@ -83,7 +83,7 @@ def status(conn: sqlite3.Connection = Depends(get_db)):
             "sales": sales,
             "outbox": outbox,
             "environment": settings.env,
-            "phase": 1,
+            "phase": PHASE,
             "timestamp": _now(),
         },
         "Status retrieved",

@@ -5,11 +5,12 @@ Management web application built for a **Raspberry Pi 3B+ edge server** with an
 offline-first architecture. The shop floor keeps billing when the internet does
 not; a **Firebase Cloud** sync layer is planned for a later phase.
 
-> **Current status: Phase 1 complete** — real FastAPI + SQLite backend, real
-> auth/sessions/RBAC, real products & inventory, atomic POS sales with
-> idempotency and bill numbers. See **[PHASE1.md](./PHASE1.md)** for the API,
-> permission matrix, deployment steps and the honest list of what is *not* built
-> yet (sync, printing, returns, reports, AI).
+> **Current status: Phase 2 complete** — real FastAPI + SQLite backend, real
+> auth/sessions/RBAC, atomic POS sales, and a fully server-driven **Products +
+> Inventory** module (pagination, search, stock status, opening stock,
+> movement ledger, valuation). See **[PHASE1.md](./PHASE1.md)** for the core
+> API and **[PHASE2.md](./PHASE2.md)** for the catalogue/inventory API, stock
+> rules and migration. Still not built: sync, printing, returns, reports, AI.
 
 ---
 
@@ -19,7 +20,7 @@ not; a **Firebase Cloud** sync layer is planned for a later phase.
                  INTERNET
                     │
                     ▼
-              FIREBASE CLOUD          (Phase 2+ — not wired yet)
+              FIREBASE CLOUD          (Phase 3+ — not wired yet)
                     ▲
                     │
            OUTBOX-DRIVEN SYNC        (outbox rows are queued, not consumed)
@@ -49,11 +50,11 @@ not; a **Firebase Cloud** sync layer is planned for a later phase.
    - Inline cart editing: `[-] Qty [+]`, item discounts, GST calculations
    - Customer selection (Walk-in or registered)
    - Checkout tenders: **Cash, UPI QR, Card, Khata Credit**
-     *(split payment: TODO phase 2)*
+     *(split payment: TODO phase 3)*
    - Immediate change calculation
    - Hold & resume bills queue (F4 / F5) — browser-local for now
    - Printable-looking thermal (58mm/80mm) and A4 tax invoice layouts
-     *(actual printing: TODO phase 2)*
+     *(actual printing: TODO phase 3)*
 
 2. **Keyboard Shortcuts**:
    - `F1` New Bill · `F2` Focus search/barcode · `F3` Customer select
@@ -67,13 +68,15 @@ not; a **Firebase Cloud** sync layer is planned for a later phase.
 
 4. **Catalog & Inventory Master**:
    - HSN codes and Indian GST slabs (0/5/12/18/28%)
-   - Stock valuation (cost vs retail)
+   - Server-paginated catalogue with search, category/brand/subcategory facets
+   - Stock valuation (cost vs retail) and stock status computed by the API
    - Physical stock counting with audited adjustment movements
-   - Batch/expiry (FEFO) and warehouses: UI present, **TODO phase 2**
+   - Opening stock (once per product) + full stock movement history
+   - Batch/expiry (FEFO) and warehouses: UI present, **TODO phase 3**
 
 5. **Financials & Khata**:
    - Customer credit (Khata) ledger, cash register, shifts with X/Z reports:
-     UI present, **TODO phase 2** (no server backing yet)
+     UI present, **TODO phase 3** (no server backing yet)
 
 6. **Role-Based Access Control (enforced by the API)**:
    - `OWNER` — everything, incl. users, audit log, outbox retry
@@ -128,7 +131,7 @@ npm run lint       # tsc --noEmit
 
 ```powershell
 cd backend
-.\.venv\Scripts\python -m pytest tests    # 76 tests
+.\.venv\Scripts\python -m pytest tests    # 107 tests
 ```
 
 ### 6. Raspberry Pi deployment
@@ -141,5 +144,7 @@ See **[PHASE1.md §6](./PHASE1.md#6-deploying-on-the-raspberry-pi)** —
 
 ## 📁 Further reading
 
-- [PHASE1.md](./PHASE1.md) — API reference, permission matrix, rules, TODOs
+- [PHASE1.md](./PHASE1.md) — core API reference, permission matrix, rules, TODOs
+- [PHASE2.md](./PHASE2.md) — products + inventory API, stock rules, schema v2
+- [PHASE2_BASELINE.md](./PHASE2_BASELINE.md) — pre-Phase-2 scope decisions
 - [PHASE1_BASELINE.md](./PHASE1_BASELINE.md) — pre-Phase-1 code audit
