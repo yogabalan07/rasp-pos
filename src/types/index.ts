@@ -95,6 +95,8 @@ export interface CartItem {
   unitPrice: number;
   discountPercent: number;
   discountAmount: number;
+  /** How the discount was entered: percent of the line, or fixed rupees. */
+  discountType?: 'PERCENT' | 'FIXED';
   gstRate: number;
   gstAmount: number;
   total: number;

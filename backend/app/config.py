@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 
 # Single source of truth for the phase reported by /api/health and /api/status.
-PHASE = 2
+PHASE = 3
 
 
 def _bool(name: str, default: bool) -> bool:

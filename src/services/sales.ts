@@ -55,10 +55,33 @@ interface SaleListPayload {
   total: number;
   page: number;
   page_size: number;
+  pages: number;
 }
 
 const rupees = (paise: number): number => paise / 100;
 const toPaise = (amount: number): number => Math.round(amount * 100);
+
+/**
+ * Discount instruction sent to the server. The server is the only authority
+ * that turns this into money: `FIXED` is paise, `PERCENT` is evaluated in
+ * SQLite-side integer maths — never in the browser.
+ */
+export interface DiscountSpec {
+  type: 'FIXED' | 'PERCENT';
+  value: number;
+}
+
+/** The cart line's discount as a server-evaluable instruction (if any). */
+function itemDiscountSpec(item: CartItem): DiscountSpec | undefined {
+  if (item.discountType === 'FIXED') {
+    const paise = toPaise(item.discountAmount);
+    return paise > 0 ? { type: 'FIXED', value: paise } : undefined;
+  }
+  if (item.discountPercent > 0) {
+    return { type: 'PERCENT', value: item.discountPercent };
+  }
+  return undefined;
+}
 
 /**
  * Product records are snapshotted into `sale_lines`, so we rebuild a minimal
@@ -162,8 +185,9 @@ interface HeldBill {
 }
 
 /**
- * Held bills are held in browser memory only.
- * TODO(phase-2): persist holds server-side so they survive a tab reload.
+ * Held bills are held in browser memory only (Phase 3 keeps this limitation
+ * honest). TODO(later phase): persist holds server-side so they survive a
+ * tab reload.
  */
 let heldBills: HeldBill[] = [];
 
@@ -179,11 +203,18 @@ function newClientSaleId(): string {
   }
 }
 
-type NewSaleInput = Omit<Sale, 'id' | 'billNumber' | 'timestamp' | 'syncedToCloud'>;
+type NewSaleInput = Omit<Sale, 'id' | 'billNumber' | 'timestamp' | 'syncedToCloud'> & {
+  /** Bill-level discount instruction (Phase 3) — money stays server-side. */
+  billDiscount?: DiscountSpec;
+  /** Optional CARD/UPI transaction reference, stored with the payment. */
+  paymentReference?: string;
+};
 
 function toRequestPayload(saleData: NewSaleInput, clientSaleId: string) {
-  const itemsDiscount = saleData.items.reduce((acc, item) => acc + item.discountAmount, 0);
-  const billDiscount = Math.max(0, saleData.totalDiscount - itemsDiscount);
+  const billDiscount =
+    saleData.billDiscount && saleData.billDiscount.value > 0
+      ? saleData.billDiscount
+      : undefined;
 
   // Cash needs an explicit tender so the server can compute change. For every
   // other tender the amount is implied by the bill, and omitting it lets the
@@ -194,15 +225,21 @@ function toRequestPayload(saleData: NewSaleInput, clientSaleId: string) {
   return {
     client_sale_id: clientSaleId,
     device_id: getDeviceId(),
-    items: saleData.items.map(item => ({
-      product_id: item.product.id,
-      quantity: item.quantity,
-      discount_paise: toPaise(item.discountAmount),
-    })),
+    // Only identity + quantity + discount *instructions* cross the wire.
+    // Price, GST, subtotal and total are recalculated by the server.
+    items: saleData.items.map(item => {
+      const discount = itemDiscountSpec(item);
+      return {
+        product_id: item.product.id,
+        quantity: item.quantity,
+        ...(discount ? { discount } : {}),
+      };
+    }),
     payment_method: saleData.paymentMethod,
-    bill_discount_paise: toPaise(billDiscount),
-    additional_charges_paise: toPaise(saleData.additionalCharges),
+    ...(billDiscount ? { discount: billDiscount } : {}),
+    additional_charges_paise: toPaise(saleData.additionalCharges || 0),
     amount_received_paise: received,
+    payment_reference: saleData.paymentReference || null,
     customer_id: saleData.customerId && saleData.customerId !== 'cust-walkin'
       ? saleData.customerId
       : null,
@@ -212,9 +249,29 @@ function toRequestPayload(saleData: NewSaleInput, clientSaleId: string) {
 }
 
 export const salesService = {
-  async getAll(): Promise<ApiResponse<Sale[]>> {
-    const res = await apiGet<SaleListPayload>('/sales', { page: 1, page_size: 200 });
-    return { data: res.data.items.map(receiptToSale), success: true, source: 'LOCAL_EDGE' };
+  /** Sales history (Phase 3): server-side page + search + date range. */
+  async getAll(
+    opts: {
+      page?: number;
+      pageSize?: number;
+      q?: string;
+      dateFrom?: string;
+      dateTo?: string;
+    } = {},
+  ): Promise<ApiResponse<Sale[]>> {
+    const res = await apiGet<SaleListPayload>('/sales', {
+      page: opts.page ?? 1,
+      page_size: opts.pageSize ?? 50,
+      q: opts.q || undefined,
+      date_from: opts.dateFrom || undefined,
+      date_to: opts.dateTo || undefined,
+    });
+    return {
+      data: res.data.items.map(receiptToSale),
+      success: true,
+      source: 'LOCAL_EDGE',
+      meta: { total: res.data.total, pages: res.data.pages },
+    };
   },
 
   async getRecent(limit: number = 20): Promise<ApiResponse<Sale[]>> {
@@ -222,6 +279,7 @@ export const salesService = {
     return { data: res.data.items.map(receiptToSale), success: true, source: 'LOCAL_EDGE' };
   },
 
+  /** Immutable receipt reprint: re-reads the sale, never recreates it. */
   async getById(id: string): Promise<ApiResponse<Sale | null>> {
     const res = await apiGet<Receipt>(`/sales/${encodeURIComponent(id.trim())}`);
     return { data: receiptToSale(res.data), success: true, source: 'LOCAL_EDGE' };
@@ -260,7 +318,11 @@ export const salesService = {
     };
   },
 
-  // ---- Held bills are browser-local (TODO phase-2 server persistence) ----
+  // ---- Held bills are browser-local (honest limitation, Phase 3) ----------
+  /**
+   * Held bills live in THIS TAB's memory only: they are lost on reload or
+   * crash. Server-side holds belong to a later phase — the UI says so.
+   */
   async holdBill(items: CartItem[], customerName: string, customerId?: string): Promise<ApiResponse<string>> {
     const holdId = `hold-${Date.now()}`;
     heldBills.push({
@@ -271,7 +333,12 @@ export const salesService = {
       customerId,
       customerName,
     });
-    return { data: holdId, success: true, message: 'Bill placed on hold (this terminal only)', source: 'CACHE' };
+    return {
+      data: holdId,
+      success: true,
+      message: 'Bill held on this terminal only (browser-local, lost on reload)',
+      source: 'CACHE',
+    };
   },
 
   async getHeldBills(): Promise<ApiResponse<HeldBill[]>> {
@@ -291,15 +358,15 @@ export const salesService = {
   },
 
   /**
-   * TODO(phase-2): sales returns.
-   * Completed sales are immutable in Phase 1 (RULE 5) and there is no return
-   * endpoint yet, so this refuses rather than silently faking a restock.
+   * Completed sales are immutable in Phase 3 (and there is no return
+   * endpoint yet), so this refuses rather than silently faking a restock.
+   * TODO(later phase): sales returns / corrections.
    */
   async processReturn(
     _saleId: string,
     _itemsReturned: { productId: string; qty: number; refundAmount: number }[],
     _reason: string,
   ): Promise<ApiResponse<Sale>> {
-    throw new ApiError('Sales returns are not available in Phase 1 (TODO)', 501);
+    throw new ApiError('Sales returns are not available yet (planned for a later phase)', 501);
   },
 };

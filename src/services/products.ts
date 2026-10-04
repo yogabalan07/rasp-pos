@@ -212,7 +212,35 @@ function pageOf(res: ApiResponse<ProductListPayload>): ApiResponse<ProductPage> 
   };
 }
 
+/** POS lookup query — name/SKU/barcode search against `/products/search`. */
+export interface PosSearchQuery {
+  q?: string;
+  barcode?: string;
+  sku?: string;
+  category?: string;
+  page?: number;
+  pageSize?: number;
+}
+
 export const productsService = {
+  /**
+   * POS product lookup (Phase 3): server-side search over the Phase 2
+   * `/products/search` endpoint. Active products only, small pages — the
+   * browser never downloads the whole catalogue. `barcode` / `sku` match
+   * exactly, which is the fast path a barcode scanner hits on Enter.
+   */
+  async posSearch(query: PosSearchQuery = {}): Promise<ApiResponse<ProductPage>> {
+    const res = await apiGet<ProductListPayload>('/products/search', {
+      q: query.q,
+      barcode: query.barcode,
+      sku: query.sku,
+      category: query.category && query.category !== 'cat-all' ? query.category : undefined,
+      page: query.page ?? 1,
+      page_size: query.pageSize ?? 40,
+    });
+    return pageOf(res);
+  },
+
   /** Server-paginated catalogue list (filters + `pages`). */
   async listPage(query: ProductQuery = {}): Promise<ApiResponse<ProductPage>> {
     return pageOf(await apiGet<ProductListPayload>('/products', toQuery(query)));

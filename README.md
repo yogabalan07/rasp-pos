@@ -5,12 +5,15 @@ Management web application built for a **Raspberry Pi 3B+ edge server** with an
 offline-first architecture. The shop floor keeps billing when the internet does
 not; a **Firebase Cloud** sync layer is planned for a later phase.
 
-> **Current status: Phase 2 complete** — real FastAPI + SQLite backend, real
-> auth/sessions/RBAC, atomic POS sales, and a fully server-driven **Products +
-> Inventory** module (pagination, search, stock status, opening stock,
-> movement ledger, valuation). See **[PHASE1.md](./PHASE1.md)** for the core
-> API and **[PHASE2.md](./PHASE2.md)** for the catalogue/inventory API, stock
-> rules and migration. Still not built: sync, printing, returns, reports, AI.
+> **Current status: Phase 3 complete** — real FastAPI + SQLite backend, real
+> auth/sessions/RBAC, atomic POS sales, a fully server-driven **Products +
+> Inventory** module, and now a fully server-driven **POS billing** workflow
+> (debounced server search, item + bill discounts, GST-inclusive totals,
+> CASH/UPI/CARD/CREDIT tenders, idempotent checkout, sales history with search
+> and date filters). See **[PHASE1.md](./PHASE1.md)** for the core API,
+> **[PHASE2.md](./PHASE2.md)** for the catalogue/inventory API and
+> **[PHASE3.md](./PHASE3.md)** for the billing rules. Still not built: sync,
+> printing, returns, customers/Khata, reports, AI.
 
 ---
 
@@ -20,7 +23,7 @@ not; a **Firebase Cloud** sync layer is planned for a later phase.
                  INTERNET
                     │
                     ▼
-              FIREBASE CLOUD          (Phase 3+ — not wired yet)
+               FIREBASE CLOUD          (later phase — not wired yet)
                     ▲
                     │
            OUTBOX-DRIVEN SYNC        (outbox rows are queued, not consumed)
@@ -45,16 +48,16 @@ not; a **Firebase Cloud** sync layer is planned for a later phase.
 ## ⚡ Key Features
 
 1. **High-Speed POS Billing (`/pos`)**:
-   - Barcode scanning with instant quantity increments
-   - SKU and name quick search, category button filters
-   - Inline cart editing: `[-] Qty [+]`, item discounts, GST calculations
+   - Debounced **server-side** product search (name / SKU / exact barcode on Enter)
+   - Inline cart editing: `[-] Qty [+]`, item discount (% or flat ₹), GST preview
+   - Bill-level discount (% or flat ₹) — evaluated by the server
    - Customer selection (Walk-in or registered)
-   - Checkout tenders: **Cash, UPI QR, Card, Khata Credit**
-     *(split payment: TODO phase 3)*
-   - Immediate change calculation
-   - Hold & resume bills queue (F4 / F5) — browser-local for now
+   - Checkout tenders: **Cash, UPI QR, Card, Khata Credit** (one tender per bill
+     — split payment not implemented)
+   - Server-computed change; checkout is idempotent and keeps the cart on failure
+   - Hold & resume bills queue (F4 / F5) — browser-local only, lost on reload
    - Printable-looking thermal (58mm/80mm) and A4 tax invoice layouts
-     *(actual printing: TODO phase 3)*
+     *(hardware printing: later phase)*
 
 2. **Keyboard Shortcuts**:
    - `F1` New Bill · `F2` Focus search/barcode · `F3` Customer select
@@ -72,11 +75,11 @@ not; a **Firebase Cloud** sync layer is planned for a later phase.
    - Stock valuation (cost vs retail) and stock status computed by the API
    - Physical stock counting with audited adjustment movements
    - Opening stock (once per product) + full stock movement history
-   - Batch/expiry (FEFO) and warehouses: UI present, **TODO phase 3**
+    - Batch/expiry (FEFO) and warehouses: UI present, **TODO (later phase)**
 
 5. **Financials & Khata**:
    - Customer credit (Khata) ledger, cash register, shifts with X/Z reports:
-     UI present, **TODO phase 3** (no server backing yet)
+      UI present, **TODO (later phase)** (no server backing yet)
 
 6. **Role-Based Access Control (enforced by the API)**:
    - `OWNER` — everything, incl. users, audit log, outbox retry
@@ -131,7 +134,7 @@ npm run lint       # tsc --noEmit
 
 ```powershell
 cd backend
-.\.venv\Scripts\python -m pytest tests    # 107 tests
+ .\.venv\Scripts\python -m pytest tests    # 161 tests
 ```
 
 ### 6. Raspberry Pi deployment
@@ -146,5 +149,7 @@ See **[PHASE1.md §6](./PHASE1.md#6-deploying-on-the-raspberry-pi)** —
 
 - [PHASE1.md](./PHASE1.md) — core API reference, permission matrix, rules, TODOs
 - [PHASE2.md](./PHASE2.md) — products + inventory API, stock rules, schema v2
+- [PHASE3.md](./PHASE3.md) — real POS billing: discounts, GST, tenders, receipts
+- [PHASE3_BASELINE.md](./PHASE3_BASELINE.md) — pre-Phase-3 scope decisions
 - [PHASE2_BASELINE.md](./PHASE2_BASELINE.md) — pre-Phase-2 scope decisions
 - [PHASE1_BASELINE.md](./PHASE1_BASELINE.md) — pre-Phase-1 code audit

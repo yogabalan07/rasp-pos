@@ -32,10 +32,18 @@ export const HeldBillsModal: React.FC<HeldBillsModalProps> = ({
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-amber-500" />
             <h2 className="text-base font-bold text-neutral-900 dark:text-white">Held Bills Queue</h2>
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">
+              Local terminal only
+            </span>
           </div>
           <button onClick={onClose} className="text-neutral-400 hover:text-neutral-700 p-1">
             <X className="h-4 w-4" />
           </button>
+        </div>
+
+        <div className="border-b border-neutral-100 bg-amber-50/60 px-5 py-2 text-[11px] text-amber-800 dark:border-neutral-800 dark:bg-amber-950/30 dark:text-amber-200">
+          Held bills are stored in this browser tab only — they are lost if the
+          page is reloaded or closed.
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-2">

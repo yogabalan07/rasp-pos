@@ -105,11 +105,26 @@ class OpeningStockRequest(ApiModel):
 
 # ------------------------------------------------------------------ sale
 
+class DiscountSpec(ApiModel):
+    """Explicit discount request (Phase 3).
+
+    `FIXED`    -> `value` is INTEGER PAISE (₹10 == 1000)
+    `PERCENT`  -> `value` is a percentage 0..100, evaluated SERVER-SIDE
+
+    The server recomputes every rupee amount from SQLite; a discount spec is
+    only an instruction, never an authoritative money value on its own.
+    """
+
+    type: Literal["FIXED", "PERCENT"]
+    value: float = Field(ge=0)
+
+
 class SaleLineRequest(ApiModel):
     product_id: str = Field(min_length=1, max_length=64)
     quantity: int = Field(gt=0, le=10_000)
     discount_paise: int = Field(default=0, ge=0)
     unit_price_paise: Optional[int] = Field(default=None, ge=0)
+    discount: Optional[DiscountSpec] = None
 
 
 class CreateSaleRequest(ApiModel):
@@ -117,6 +132,7 @@ class CreateSaleRequest(ApiModel):
     device_id: str = Field(min_length=1, max_length=64)
     items: list[SaleLineRequest] = Field(min_length=1, max_length=500)
     payment_method: PaymentMethod
+    discount: Optional[DiscountSpec] = None
     bill_discount_paise: int = Field(default=0, ge=0)
     additional_charges_paise: int = Field(default=0, ge=0)
     amount_received_paise: Optional[int] = Field(default=None, ge=0)

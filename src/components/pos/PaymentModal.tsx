@@ -15,12 +15,16 @@ interface PaymentModalProps {
   isOpen: boolean;
   totalAmount: number;
   customer: Customer;
+  /** True while the checkout request is in flight — blocks resubmits. */
+  isProcessing?: boolean;
   onClose: () => void;
   onComplete: (details: {
     method: PaymentMethod;
     amountReceived: number;
     changeDue: number;
     notes?: string;
+    /** CARD terminal approval code (optional). */
+    reference?: string;
   }) => void;
 }
 
@@ -28,6 +32,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   isOpen,
   totalAmount,
   customer,
+  isProcessing = false,
   onClose,
   onComplete,
 }) => {
@@ -41,6 +46,13 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       setTenderedInput(Math.round(totalAmount).toString());
     }
   }, [isOpen, totalAmount]);
+
+  // Walk-in customers have no khata — never leave CREDIT stuck on them.
+  useEffect(() => {
+    if (customer.id === 'cust-walkin' && method === 'CREDIT') {
+      setMethod('CASH');
+    }
+  }, [customer.id, method]);
 
   if (!isOpen) return null;
 
@@ -56,8 +68,11 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     2000,
   ].filter((v, i, a) => v >= totalAmount && a.indexOf(v) === i).slice(0, 4);
 
+  const isWalkIn = customer.id === 'cust-walkin';
+
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (isProcessing) return;
     if (method === 'CASH' && tendered < totalAmount) {
       return; // Cannot pay less than total for cash
     }
@@ -67,6 +82,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       amountReceived: method === 'CASH' ? tendered : totalAmount,
       changeDue: method === 'CASH' ? changeDue : 0,
       notes,
+      reference: method === 'CARD' && cardRef.trim() ? cardRef.trim() : undefined,
     });
   };
 
@@ -87,8 +103,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         {/* Content */}
         <div className="p-5 space-y-4">
           {/* Method Selector Tabs */}
-          {/* TODO(phase-2): split payments — the Phase 1 API accepts one
-              payment method per bill (CASH / UPI / CARD / CREDIT). */}
+          {/* No split payments — the API accepts one payment method per bill
+              (CASH / UPI / CARD / CREDIT). */}
           <div className="grid grid-cols-4 gap-2">
             {[
               { id: 'CASH', label: 'Cash', icon: Banknote },
@@ -98,12 +114,19 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
             ].map(m => {
               const Icon = m.icon;
               const isSelected = method === m.id;
+              const creditBlocked = m.id === 'CREDIT' && isWalkIn;
               return (
                 <button
                   key={m.id}
                   type="button"
                   onClick={() => setMethod(m.id as PaymentMethod)}
-                  className={`flex flex-col items-center justify-center rounded-lg p-2.5 text-xs font-semibold transition-all border ${
+                  disabled={isProcessing || creditBlocked}
+                  title={
+                    creditBlocked
+                      ? 'Credit sales need a selected customer (F3) — walk-in has no khata'
+                      : undefined
+                  }
+                  className={`flex flex-col items-center justify-center rounded-lg p-2.5 text-xs font-semibold transition-all border disabled:opacity-50 disabled:cursor-not-allowed ${
                     isSelected
                       ? 'border-neutral-900 bg-neutral-900 text-white shadow-xs dark:border-white dark:bg-white dark:text-neutral-950'
                       : 'border-neutral-200 bg-neutral-50 text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200'
@@ -215,7 +238,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
             </div>
           )}
 
-          {/* SPLIT Panel removed for Phase 1 — see the TODO above. */}
+          {/* SPLIT payments removed — one tender per bill. */}
         </div>
 
         {/* Modal Footer */}
@@ -223,7 +246,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg border border-neutral-300 px-4 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            disabled={isProcessing}
+            className="rounded-lg border border-neutral-300 px-4 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
           >
             Cancel (ESC)
           </button>
@@ -231,11 +255,15 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           <button
             type="button"
             onClick={() => handleSubmit()}
-            disabled={method === 'CASH' && tendered < totalAmount}
+            disabled={isProcessing || (method === 'CASH' && tendered < totalAmount)}
             className="flex items-center gap-2 rounded-lg bg-emerald-600 px-6 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
           >
-            <span>Complete Payment ₹{totalAmount.toFixed(2)}</span>
-            <ArrowRight className="h-4 w-4" />
+            <span>
+              {isProcessing
+                ? 'Processing…'
+                : `Complete Payment ₹${totalAmount.toFixed(2)}`}
+            </span>
+            {!isProcessing && <ArrowRight className="h-4 w-4" />}
           </button>
         </div>
       </div>

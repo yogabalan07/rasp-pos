@@ -47,11 +47,22 @@ def list_sales(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     q: str | None = Query(default=None, max_length=200),
+    date_from: str | None = Query(default=None, max_length=10),
+    date_to: str | None = Query(default=None, max_length=10),
     conn: sqlite3.Connection = Depends(get_db),
     _user: sqlite3.Row = Depends(require("sale:read")),
 ):
-    return ok(sales_service.list_sales(conn, page=page, page_size=page_size, q=q),
-              "Sales retrieved")
+    return ok(
+        sales_service.list_sales(
+            conn,
+            page=page,
+            page_size=page_size,
+            q=q,
+            date_from=date_from,
+            date_to=date_to,
+        ),
+        "Sales retrieved",
+    )
 
 
 @router.get("/{reference}")

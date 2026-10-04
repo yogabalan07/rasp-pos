@@ -63,7 +63,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCurrentUser(res.data);
     } catch {
       setCurrentUser(null);
-      showToast('Cannot reach the local POS server', 'error');
+      showToast('Unable to reach local POS server.', 'error');
     }
   }, [showToast]);
 

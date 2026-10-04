@@ -7,8 +7,9 @@ import {
   PaymentMethod 
 } from '../types';
 import { productsService } from '../services/products';
-import { salesService } from '../services/sales';
+import { salesService, DiscountSpec } from '../services/sales';
 import { customersService } from '../services/customers';
+import { ApiError } from '../services/api';
 import { useApp } from '../context/AppContext';
 import { PaymentModal } from '../components/pos/PaymentModal';
 import { ReceiptModal } from '../components/pos/ReceiptModal';
@@ -24,20 +25,35 @@ import {
   Clock, 
   RotateCcw, 
   Receipt, 
-  CreditCard, 
-  Percent, 
-  Check,
   ShoppingBag,
   Zap
 } from 'lucide-react';
 
+/** Server search returns small pages — the browser never loads the catalogue. */
+const POS_PAGE_SIZE = 40;
+const SEARCH_DEBOUNCE_MS = 250;
+
+interface BillDiscount {
+  type: 'PERCENT' | 'FIXED';
+  /** percent (0-100) or rupees, display-only until the server recalculates. */
+  value: number;
+}
+
 export const PosPage: React.FC = () => {
   const { currentBranch, currentUser, showToast, navigateTo } = useApp();
 
+  // Server-driven product grid (Phase 3): debounced `/products/search`.
   const [products, setProducts] = useState<Product[]>([]);
+  const [productTotal, setProductTotal] = useState(0);
+  const [productPage, setProductPage] = useState(1);
+  const [productPages, setProductPages] = useState(1);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(true);
+  const [productError, setProductError] = useState<string | null>(null);
+
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [activeCategoryId, setActiveCategoryId] = useState<string>('cat-all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [customer, setCustomer] = useState<Customer>({
     id: 'cust-walkin',
@@ -56,14 +72,17 @@ export const PosPage: React.FC = () => {
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [isHeldOpen, setIsHeldOpen] = useState(false);
   const [isCustomerOpen, setIsCustomerOpen] = useState(false);
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
   const [heldBills, setHeldBills] = useState<any[]>([]);
 
-  // Additional charges & bill discount
-  const [billDiscountPercent, setBillDiscountPercent] = useState<number>(0);
+  // Additional charges & bill discount (bill discount: % or flat ₹)
+  const [billDiscount, setBillDiscount] = useState<BillDiscount>({ type: 'PERCENT', value: 0 });
   const [additionalCharges, setAdditionalCharges] = useState<number>(0);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  /** Sequence guard so a slower search response can never overwrite a newer one. */
+  const searchSeq = useRef(0);
 
   useEffect(() => {
     loadData();
@@ -102,17 +121,92 @@ export const PosPage: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [cart, customer]);
 
+  // Debounce the search box (barcode scanners type fast; humans type slower).
+  useEffect(() => {
+    const term = searchQuery.trim();
+    if (!term) {
+      setDebouncedQuery('');
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedQuery(term), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // (Re)query the server whenever the debounced text or the category changes.
+  useEffect(() => {
+    loadProducts(1, debouncedQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedQuery, activeCategoryId]);
+
   const loadData = async () => {
-    const [prodRes, catRes, custRes, heldRes] = await Promise.all([
-      productsService.getAll(),
+    const [catRes, custRes, heldRes] = await Promise.all([
       productsService.getCategories(),
       customersService.getAll(),
       salesService.getHeldBills(),
     ]);
-    setProducts(prodRes.data);
     setCategories(catRes.data);
     setAllCustomers(custRes.data);
     setHeldBills(heldRes.data);
+  };
+
+  /** Fetch one page of products from the server (active products only). */
+  const loadProducts = async (pageToLoad: number, query: string) => {
+    const seq = ++searchSeq.current;
+    setIsLoadingProducts(true);
+    try {
+      const res = await productsService.posSearch({
+        q: query || undefined,
+        category: activeCategoryId,
+        page: pageToLoad,
+        pageSize: POS_PAGE_SIZE,
+      });
+      if (seq !== searchSeq.current) return;
+      setProducts(prev => (pageToLoad === 1 ? res.data.items : [...prev, ...res.data.items]));
+      setProductTotal(res.data.total);
+      setProductPage(res.data.page);
+      setProductPages(res.data.pages);
+      setProductError(null);
+    } catch (err) {
+      if (seq !== searchSeq.current) return;
+      setProductError(err instanceof ApiError ? err.message : 'Unable to load products');
+      if (pageToLoad === 1) setProducts([]);
+    } finally {
+      if (seq === searchSeq.current) setIsLoadingProducts(false);
+    }
+  };
+
+  /**
+   * Line discount in rupees for the given quantity. Percent discounts follow
+   * the quantity; a fixed discount stays flat. Display only — the server
+   * recomputes every amount from SQLite at checkout.
+   */
+  const lineDiscountFor = (item: CartItem, qty: number): number => {
+    const gross = item.unitPrice * qty;
+    const raw =
+      item.discountType === 'FIXED'
+        ? item.discountAmount
+        : (item.unitPrice * qty * item.discountPercent) / 100;
+    return Math.min(Math.max(0, raw), gross);
+  };
+
+  const lineTaxFor = (item: CartItem): number => {
+    const gross = item.unitPrice * item.quantity - lineDiscountFor(item, item.quantity);
+    return (gross * item.gstRate) / (100 + item.gstRate);
+  };
+
+  const recomputeLine = (item: CartItem, qty: number): CartItem => {
+    const gross = item.unitPrice * qty;
+    const discount = lineDiscountFor(item, qty);
+    const net = gross - discount;
+    return {
+      ...item,
+      quantity: qty,
+      discountAmount: discount,
+      discountPercent:
+        item.discountType === 'FIXED' && gross > 0 ? (discount / gross) * 100 : item.discountPercent,
+      gstAmount: (net * item.gstRate) / (100 + item.gstRate),
+      total: net,
+    };
   };
 
   // Add product to cart
@@ -129,25 +223,11 @@ export const PosPage: React.FC = () => {
           showToast(`Cannot exceed available stock (${product.stock})`, 'warning');
           return prev;
         }
-        return prev.map(item => {
-          if (item.product.id === product.id) {
-            const newQty = item.quantity + 1;
-            const itemDiscount = (item.unitPrice * newQty * item.discountPercent) / 100;
-            const gross = item.unitPrice * newQty - itemDiscount;
-            const gstAmount = (gross * item.gstRate) / (100 + item.gstRate);
-            return {
-              ...item,
-              quantity: newQty,
-              discountAmount: itemDiscount,
-              gstAmount,
-              total: gross,
-            };
-          }
-          return item;
-        });
+        return prev.map(item =>
+          item.product.id === product.id ? recomputeLine(item, item.quantity + 1) : item,
+        );
       }
 
-      // New item
       const unitPrice = product.sellingPrice;
       const gstAmount = (unitPrice * product.gstRate) / (100 + product.gstRate);
       const newItem: CartItem = {
@@ -165,50 +245,57 @@ export const PosPage: React.FC = () => {
   };
 
   const updateQuantity = (productId: string, delta: number) => {
-    setCart(prev => {
-      return prev
+    setCart(prev =>
+      prev
         .map(item => {
-          if (item.product.id === productId) {
-            const newQty = item.quantity + delta;
-            if (newQty <= 0) return null;
-            if (newQty > item.product.stock) {
-              showToast(`Only ${item.product.stock} available in stock`, 'warning');
-              return item;
-            }
-            const itemDiscount = (item.unitPrice * newQty * item.discountPercent) / 100;
-            const gross = item.unitPrice * newQty - itemDiscount;
-            const gstAmount = (gross * item.gstRate) / (100 + item.gstRate);
-            return {
-              ...item,
-              quantity: newQty,
-              discountAmount: itemDiscount,
-              gstAmount,
-              total: gross,
-            };
+          if (item.product.id !== productId) return item;
+          const newQty = item.quantity + delta;
+          if (newQty <= 0) return null;
+          if (newQty > item.product.stock) {
+            showToast(`Only ${item.product.stock} available in stock`, 'warning');
+            return item;
           }
-          return item;
+          return recomputeLine(item, newQty);
         })
-        .filter(Boolean) as CartItem[];
-    });
+        .filter(Boolean) as CartItem[],
+    );
   };
 
-  const updateItemDiscount = (productId: string, discountPercent: number) => {
+  /** Percent discount preset (0 / 5 / 10 %) — evaluated server-side on checkout. */
+  const setItemDiscountPercent = (productId: string, discountPercent: number) => {
     setCart(prev =>
       prev.map(item => {
-        if (item.product.id === productId) {
-          const discountAmount = (item.unitPrice * item.quantity * discountPercent) / 100;
-          const gross = item.unitPrice * item.quantity - discountAmount;
-          const gstAmount = (gross * item.gstRate) / (100 + item.gstRate);
-          return {
-            ...item,
-            discountPercent,
-            discountAmount,
-            gstAmount,
-            total: gross,
-          };
+        if (item.product.id !== productId) return item;
+        const base: CartItem = {
+          ...item,
+          discountType: discountPercent > 0 ? 'PERCENT' : undefined,
+          discountPercent,
+        };
+        return recomputeLine(base, item.quantity);
+      }),
+    );
+  };
+
+  /** Fixed rupee discount on one line, clamped to the line's gross amount. */
+  const setItemDiscountFixed = (productId: string, raw: string) => {
+    setCart(prev =>
+      prev.map(item => {
+        if (item.product.id !== productId) return item;
+        if (raw.trim() === '') {
+          const cleared: CartItem = { ...item, discountType: undefined, discountPercent: 0 };
+          return recomputeLine(cleared, item.quantity);
         }
-        return item;
-      })
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value <= 0) return item;
+        const gross = item.unitPrice * item.quantity;
+        const base: CartItem = {
+          ...item,
+          discountType: 'FIXED',
+          discountAmount: Math.min(value, gross),
+          discountPercent: 0,
+        };
+        return recomputeLine(base, item.quantity);
+      }),
     );
   };
 
@@ -218,7 +305,7 @@ export const PosPage: React.FC = () => {
 
   const handleResetCart = () => {
     setCart([]);
-    setBillDiscountPercent(0);
+    setBillDiscount({ type: 'PERCENT', value: 0 });
     setAdditionalCharges(0);
     setCustomer(allCustomers[0] || {
       id: 'cust-walkin',
@@ -238,11 +325,11 @@ export const PosPage: React.FC = () => {
       showToast('Cannot hold an empty bill', 'warning');
       return;
     }
-    await salesService.holdBill(cart, customer.name, customer.id);
+    const res = await salesService.holdBill(cart, customer.name, customer.id);
     const updatedHeld = await salesService.getHeldBills();
     setHeldBills(updatedHeld.data);
     setCart([]);
-    showToast(`Bill for ${customer.name} placed on hold (F4)`, 'info');
+    showToast(res.message || 'Bill held on this terminal only', 'info');
   };
 
   const handleResumeBill = async (holdId: string) => {
@@ -258,32 +345,42 @@ export const PosPage: React.FC = () => {
     }
   };
 
-  const handleBarcodeSubmit = (e: React.FormEvent) => {
+  /** Enter in the search box = exact barcode, then exact SKU, then text search. */
+  const handleBarcodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const term = searchQuery.trim();
+    if (!term) return;
 
-    const matched = products.find(
-      p => p.barcode === searchQuery.trim() || p.sku.toLowerCase() === searchQuery.trim().toLowerCase()
-    );
-
-    if (matched) {
-      addToCart(matched);
-      setSearchQuery('');
-      showToast(`Scanned: ${matched.name}`, 'success');
-    } else {
-      // Filter or keep search open
+    try {
+      const byBarcode = await productsService.posSearch({ barcode: term, pageSize: 5 });
+      const match = byBarcode.data.items[0] ?? (await productsService.posSearch({ sku: term, pageSize: 5 })).data.items[0];
+      if (match) {
+        addToCart(match);
+        setSearchQuery('');
+        showToast(`Scanned: ${match.name}`, 'success');
+      } else {
+        // Fall back to a normal text search so the grid shows the candidates.
+        setDebouncedQuery(term);
+        showToast(`No exact match for "${term}"`, 'warning');
+      }
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Product lookup failed', 'error');
     }
   };
 
-  // Calculations
+  // Calculations (display-only preview; the server is authoritative)
   const rawSubtotal = cart.reduce((acc, i) => acc + i.unitPrice * i.quantity, 0);
-  const itemsDiscountTotal = cart.reduce((acc, i) => acc + i.discountAmount, 0);
-  const billDiscountAmount = ((rawSubtotal - itemsDiscountTotal) * billDiscountPercent) / 100;
+  const itemsDiscountTotal = cart.reduce((acc, i) => acc + lineDiscountFor(i, i.quantity), 0);
+  const discountable = Math.max(0, rawSubtotal - itemsDiscountTotal);
+  const billDiscountAmount =
+    billDiscount.type === 'FIXED'
+      ? Math.min(billDiscount.value, discountable)
+      : (discountable * Math.min(billDiscount.value, 100)) / 100;
   const totalDiscount = itemsDiscountTotal + billDiscountAmount;
   const taxableSubtotal = rawSubtotal - totalDiscount;
 
-  // Split GST: Intra-state 50% CGST, 50% SGST
-  const totalTax = cart.reduce((acc, i) => acc + i.gstAmount, 0);
+  // Split GST: Intra-state 50% CGST, 50% SGST (estimated preview)
+  const totalTax = cart.reduce((acc, i) => acc + lineTaxFor(i), 0);
   const cgst = totalTax / 2;
   const sgst = totalTax / 2;
   const igst = 0;
@@ -292,13 +389,25 @@ export const PosPage: React.FC = () => {
   const roundedGrandTotal = Math.round(rawGrandTotal);
   const roundOff = roundedGrandTotal - rawGrandTotal;
 
+  /** Bill discount instruction — clamped here, validated by the server. */
+  const billDiscountSpec = (): DiscountSpec =>
+    billDiscount.type === 'FIXED'
+      ? {
+          type: 'FIXED',
+          value: Math.max(0, Math.min(Math.round(billDiscount.value * 100), Math.round(discountable * 100))),
+        }
+      : { type: 'PERCENT', value: Math.max(0, Math.min(billDiscount.value, 100)) };
+
   // Finalize payment
   const handleCompletePayment = async (details: {
     method: PaymentMethod;
     amountReceived: number;
     changeDue: number;
     notes?: string;
+    reference?: string;
   }) => {
+    if (isCheckingOut) return; // double-click guard (server idempotency is the second line)
+    setIsCheckingOut(true);
     try {
       const saleRes = await salesService.createSale({
         cashierId: currentUser?.id ?? '',
@@ -322,6 +431,8 @@ export const PosPage: React.FC = () => {
         status: 'COMPLETED',
         branchId: currentBranch.id,
         notes: details.notes,
+        paymentReference: details.reference,
+        billDiscount: billDiscountSpec(),
       });
 
       setLastSale(saleRes.data);
@@ -329,26 +440,28 @@ export const PosPage: React.FC = () => {
       setIsReceiptOpen(true);
       showToast(`Sale completed: ${saleRes.data.billNumber}`, 'success');
 
-      // Refresh products to update live stocks
-      const updatedProds = await productsService.getAll();
-      setProducts(updatedProds.data);
+      // Cart is cleared ONLY after the server confirmed the sale.
+      setCart([]);
+      setBillDiscount({ type: 'PERCENT', value: 0 });
+      setAdditionalCharges(0);
+
+      // Refresh the grid so stock badges reflect the deduction.
+      loadProducts(1, debouncedQuery);
     } catch (err: any) {
-      showToast(err.message || 'Payment failed', 'error');
+      if (err instanceof ApiError) {
+        if (err.status === 0) {
+          showToast('Unable to reach local POS server. Your cart is kept — please retry.', 'error');
+        } else if (err.status !== 401) {
+          showToast(err.message || 'Checkout failed', 'error');
+        }
+        // 401 is toasted globally by AppContext; the cart always stays intact.
+      } else {
+        showToast(err.message || 'Payment failed', 'error');
+      }
+    } finally {
+      setIsCheckingOut(false);
     }
   };
-
-  const filteredProducts = products.filter(p => {
-    const matchesCat = activeCategoryId === 'cat-all' || p.categoryId === activeCategoryId;
-    if (!matchesCat) return false;
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      p.name.toLowerCase().includes(q) ||
-      p.sku.toLowerCase().includes(q) ||
-      p.barcode.includes(q) ||
-      p.brand.toLowerCase().includes(q)
-    );
-  });
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] w-full overflow-hidden bg-neutral-100 dark:bg-neutral-950">
@@ -417,15 +530,33 @@ export const PosPage: React.FC = () => {
 
         {/* Product Cards Grid */}
         <div className="flex-1 overflow-y-auto p-3">
-          {filteredProducts.length === 0 ? (
+          {isLoadingProducts && products.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 text-neutral-400">
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-700 mb-2" />
+              <p className="text-xs font-medium">Loading products from local server…</p>
+            </div>
+          ) : productError ? (
+            <div className="flex flex-col items-center justify-center py-20 text-neutral-400">
+              <ShoppingBag className="h-10 w-10 text-neutral-300 stroke-1 mb-2" />
+              <p className="text-xs font-medium text-red-500">{productError}</p>
+              <p className="text-[11px] text-neutral-400">Check that the POS backend is running, then retry.</p>
+              <button
+                onClick={() => loadProducts(1, debouncedQuery)}
+                className="mt-3 rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300"
+              >
+                Retry
+              </button>
+            </div>
+          ) : products.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-neutral-400">
               <ShoppingBag className="h-10 w-10 text-neutral-300 stroke-1 mb-2" />
               <p className="text-xs font-medium">No matching products found.</p>
               <p className="text-[11px] text-neutral-400">Try searching with a different keyword or barcode.</p>
             </div>
           ) : (
+            <>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2.5">
-              {filteredProducts.map(product => {
+              {products.map(product => {
                 const isOutOfStock = product.stock <= 0;
                 const isLowStock = product.stock <= product.minStock && product.stock > 0;
 
@@ -498,6 +629,20 @@ export const PosPage: React.FC = () => {
                 );
               })}
             </div>
+            {productPage < productPages && (
+              <div className="flex justify-center pt-3">
+                <button
+                  onClick={() => loadProducts(productPage + 1, debouncedQuery)}
+                  disabled={isLoadingProducts}
+                  className="rounded-md border border-neutral-300 px-4 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300"
+                >
+                  {isLoadingProducts
+                    ? 'Loading…'
+                    : `Show more (${products.length} of ${productTotal})`}
+                </button>
+              </div>
+            )}
+            </>
           )}
         </div>
 
@@ -566,8 +711,16 @@ export const PosPage: React.FC = () => {
                       <span>Rate: ₹{item.unitPrice.toFixed(2)}</span>
                       <span>·</span>
                       <span>GST: {item.gstRate}%</span>
-                      {item.discountPercent > 0 && (
-                        <span className="text-emerald-600 font-bold">-{item.discountPercent}%</span>
+                      <span>·</span>
+                      <span title={`Available stock: ${item.product.stock}`}>
+                        Stock: {item.product.stock}
+                      </span>
+                      {lineDiscountFor(item, item.quantity) > 0 && (
+                        <span className="font-bold text-emerald-600">
+                          {item.discountType === 'FIXED'
+                            ? `-₹${lineDiscountFor(item, item.quantity).toFixed(0)}`
+                            : `-${item.discountPercent}%`}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -606,14 +759,14 @@ export const PosPage: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Inline Item Discount button */}
+                  {/* Inline Item Discount: % presets + flat ₹ (server re-validates) */}
                   <div className="flex items-center gap-1">
                     {[0, 5, 10].map(pct => (
                       <button
                         key={pct}
-                        onClick={() => updateItemDiscount(item.product.id, pct)}
+                        onClick={() => setItemDiscountPercent(item.product.id, pct)}
                         className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                          item.discountPercent === pct
+                          item.discountType !== 'FIXED' && item.discountPercent === pct
                             ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-950 font-bold'
                             : 'border border-neutral-200 text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300'
                         }`}
@@ -621,6 +774,17 @@ export const PosPage: React.FC = () => {
                         {pct === 0 ? 'No Disc' : `${pct}%`}
                       </button>
                     ))}
+                    <input
+                      type="number"
+                      min={0}
+                      max={Math.round(item.unitPrice * item.quantity)}
+                      step={1}
+                      value={item.discountType === 'FIXED' ? String(item.discountAmount) : ''}
+                      onChange={e => setItemDiscountFixed(item.product.id, e.target.value)}
+                      placeholder="₹ off"
+                      title="Flat ₹ discount on this line"
+                      className="w-16 rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] font-tabular text-neutral-700 focus:border-neutral-900 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+                    />
                   </div>
                 </div>
               </div>
@@ -633,6 +797,56 @@ export const PosPage: React.FC = () => {
           <div className="flex justify-between text-neutral-600 dark:text-neutral-400">
             <span>Subtotal ({cart.reduce((acc, i) => acc + i.quantity, 0)} items)</span>
             <span className="font-tabular">₹{rawSubtotal.toFixed(2)}</span>
+          </div>
+
+          {/* Bill-level discount: % or flat ₹ (applies to the subtotal after line discounts) */}
+          <div className="flex items-center justify-between gap-2 text-neutral-600 dark:text-neutral-400">
+            <span>Bill Discount</span>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={billDiscount.type === 'PERCENT' ? 100 : undefined}
+                value={billDiscount.value > 0 ? String(billDiscount.value) : ''}
+                onChange={e => {
+                  const raw = e.target.value;
+                  const value = raw.trim() === '' ? 0 : Math.max(0, Number(raw) || 0);
+                  setBillDiscount(prev =>
+                    prev.type === 'PERCENT'
+                      ? { type: 'PERCENT', value: Math.min(value, 100) }
+                      : { type: 'FIXED', value },
+                  );
+                }}
+                placeholder="0"
+                className="w-16 rounded border border-neutral-200 bg-white px-1.5 py-1 text-right text-[11px] font-tabular text-neutral-800 focus:border-neutral-900 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+              />
+              <div className="flex overflow-hidden rounded border border-neutral-200 text-[10px] font-bold dark:border-neutral-700">
+                <button
+                  type="button"
+                  onClick={() => setBillDiscount(prev => ({ type: 'PERCENT', value: prev.value }))}
+                  className={`px-1.5 py-1 ${
+                    billDiscount.type === 'PERCENT'
+                      ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-950'
+                      : 'bg-white text-neutral-500 hover:bg-neutral-100 dark:bg-neutral-800 dark:text-neutral-400'
+                  }`}
+                  title="Discount in percent"
+                >
+                  %
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBillDiscount(prev => ({ type: 'FIXED', value: prev.value }))}
+                  className={`border-l border-neutral-200 px-1.5 py-1 dark:border-neutral-700 ${
+                    billDiscount.type === 'FIXED'
+                      ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-950'
+                      : 'bg-white text-neutral-500 hover:bg-neutral-100 dark:bg-neutral-800 dark:text-neutral-400'
+                  }`}
+                  title="Discount in flat rupees"
+                >
+                  ₹
+                </button>
+              </div>
+            </div>
           </div>
 
           {totalDiscount > 0 && (
@@ -710,11 +924,15 @@ export const PosPage: React.FC = () => {
 
             <button
               onClick={() => setIsPaymentOpen(true)}
-              disabled={cart.length === 0}
+              disabled={cart.length === 0 || isCheckingOut}
               className="flex-1 flex items-center justify-center gap-2 rounded-lg bg-emerald-600 py-3 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-40 shadow-sm transition-colors"
             >
               <Zap className="h-4 w-4 fill-white" />
-              <span>PAY ₹{roundedGrandTotal.toFixed(2)} (F6)</span>
+              <span>
+                {isCheckingOut
+                  ? 'Processing…'
+                  : `PAY ₹${roundedGrandTotal.toFixed(2)} (F6)`}
+              </span>
             </button>
           </div>
         </div>
@@ -725,6 +943,7 @@ export const PosPage: React.FC = () => {
         isOpen={isPaymentOpen}
         totalAmount={roundedGrandTotal}
         customer={customer}
+        isProcessing={isCheckingOut}
         onClose={() => setIsPaymentOpen(false)}
         onComplete={handleCompletePayment}
       />

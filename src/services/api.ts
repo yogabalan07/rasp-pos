@@ -113,7 +113,9 @@ async function request<T>(
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new ApiError('Cannot reach the local POS server', 0);
+    // Fetch failed: the local API is down or unreachable (Phase 3 requirement
+    // is to say exactly that and keep the cart — never fake a success).
+    throw new ApiError('Unable to reach local POS server.', 0);
   }
 
   let envelope: Envelope<T> | null = null;
