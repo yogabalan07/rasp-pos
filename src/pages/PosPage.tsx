@@ -33,6 +33,23 @@ import {
 const POS_PAGE_SIZE = 40;
 const SEARCH_DEBOUNCE_MS = 250;
 
+/**
+ * Local (non-persisted) walk-in customer. It has a zero credit limit, so it
+ * can never take a khata sale — the backend also rejects CREDIT for unknown
+ * customer ids as defence in depth.
+ */
+const WALK_IN_CUSTOMER: Customer = {
+  id: 'cust-walkin',
+  name: 'Walk-in Customer',
+  phone: '',
+  outstandingBalance: 0,
+  creditLimit: 0,
+  availableCredit: 0,
+  active: true,
+  totalBills: 0,
+  totalSpent: 0,
+};
+
 interface BillDiscount {
   type: 'PERCENT' | 'FIXED';
   /** percent (0-100) or rupees, display-only until the server recalculates. */
@@ -55,16 +72,7 @@ export const PosPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [customer, setCustomer] = useState<Customer>({
-    id: 'cust-walkin',
-    name: 'Walk-in Customer',
-    phone: '9999999999',
-    outstandingBalance: 0,
-    creditLimit: 0,
-    loyaltyPoints: 0,
-    totalBills: 148,
-    totalSpent: 48200,
-  });
+  const [customer, setCustomer] = useState<Customer>(WALK_IN_CUSTOMER);
   const [allCustomers, setAllCustomers] = useState<Customer[]>([]);
 
   // Modals
@@ -141,7 +149,7 @@ export const PosPage: React.FC = () => {
   const loadData = async () => {
     const [catRes, custRes, heldRes] = await Promise.all([
       productsService.getCategories(),
-      customersService.getAll(),
+      customersService.getAll({ active: true }),
       salesService.getHeldBills(),
     ]);
     setCategories(catRes.data);
@@ -307,16 +315,8 @@ export const PosPage: React.FC = () => {
     setCart([]);
     setBillDiscount({ type: 'PERCENT', value: 0 });
     setAdditionalCharges(0);
-    setCustomer(allCustomers[0] || {
-      id: 'cust-walkin',
-      name: 'Walk-in Customer',
-      phone: '9999999999',
-      outstandingBalance: 0,
-      creditLimit: 0,
-      loyaltyPoints: 0,
-      totalBills: 0,
-      totalSpent: 0,
-    });
+    // Always return to walk-in — never silently attach a khata customer.
+    setCustomer(WALK_IN_CUSTOMER);
     showToast('New bill started (Cart cleared)', 'info');
   };
 
@@ -978,7 +978,6 @@ export const PosPage: React.FC = () => {
       {/* Customer Select Modal */}
       <CustomerSelectModal
         isOpen={isCustomerOpen}
-        customers={allCustomers}
         selectedCustomerId={customer.id}
         onClose={() => setIsCustomerOpen(false)}
         onSelectCustomer={c => {
@@ -986,6 +985,7 @@ export const PosPage: React.FC = () => {
           showToast(`Customer attached: ${c.name}`, 'info');
         }}
         onCreateCustomer={async newCust => {
+          // Throws (403/409/422) so the modal keeps the form open + toasts.
           const res = await customersService.create(newCust);
           setAllCustomers(prev => [...prev, res.data]);
           setCustomer(res.data);

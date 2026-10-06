@@ -27,6 +27,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from ..errors import ApiError
+from . import customer_service
 from .audit_service import record as audit
 from .auth_service import utcnow_iso
 from .gst_service import compute_invoice_totals, split_cgst_sgst, VALID_GST_RATES
@@ -560,7 +561,7 @@ def create_sale(
                 400, "Payment amount does not match bill total", code="PAYMENT_MISMATCH"
             )
 
-    # ---- customer snapshot (no customers table until Phase 4)
+    # ---- customer (Phase 4: real `customers` row for credit sales)
     customer_id = payload.get("customer_id") or None
     customer_name = (str(payload.get("customer_name") or "").strip() or None)
     customer_phone = (str(payload.get("customer_phone") or "").strip() or None)
@@ -573,6 +574,25 @@ def create_sale(
             "Credit sales need a selected customer",
             code="CUSTOMER_REQUIRED_FOR_CREDIT",
         )
+    if method == "CREDIT":
+        # Server-authoritative gate: the customer must exist, be active and
+        # have headroom inside their credit limit (0 == credit disabled).
+        # Raises CUSTOMER_NOT_FOUND / CUSTOMER_INACTIVE /
+        # CUSTOMER_CREDIT_LIMIT_EXCEEDED before a single row is written.
+        customer = customer_service.validate_credit_sale(
+            conn, customer_id, total_paise=total
+        )
+        customer_name = customer_name or customer["name"]
+        customer_phone = customer_phone or customer["phone"]
+    elif customer_id:
+        # Cash/UPI/CARD bills may still carry a customer for history: enrich
+        # the snapshot from the row when the client did not send a name.
+        row = conn.execute(
+            "SELECT name, phone FROM customers WHERE id = ?", (customer_id,)
+        ).fetchone()
+        if row is not None:
+            customer_name = customer_name or row["name"]
+            customer_phone = customer_phone or row["phone"]
 
     # ---- write
     now = utcnow_iso()
@@ -686,6 +706,20 @@ def create_sale(
         after={"bill_no": bill_no, "total_paise": total, "items": len(line_defs)},
         device_id=device_id,
     )
+
+    # Khata book: a CREDIT sale posts one DEBIT entry against the customer,
+    # inside this same transaction (sale + ledger + outbox + audit commit or
+    # roll back together). Cash/UPI/CARD bills create NO receivable entry.
+    if method == "CREDIT":
+        customer_service.post_credit_sale(
+            conn,
+            customer_id,
+            sale_id=sale_id,
+            bill_no=bill_no,
+            total_paise=total,
+            actor_id=actor_id,
+            device_id=device_id,
+        )
 
     receipt = _receipt(conn, sale_id)
     receipt["idempotent"] = False

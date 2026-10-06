@@ -689,7 +689,9 @@ def test_migration_2_upgrades_a_phase1_database(tmp_path):
         version = conn.execute(
             "SELECT value FROM schema_meta WHERE key='version'"
         ).fetchone()[0]
-        assert int(version) == 2
+        # Phase 1 database upgraded through every migration in the chain
+        # (2 = Phase 2 columns, 3 = Phase 4 customer/supplier tables).
+        assert int(version) == 3
 
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(products)")}
         assert {"subcategory", "created_by", "updated_by"} <= columns

@@ -63,19 +63,27 @@ def device_id_from_request(request: Request) -> str | None:
 
 PERMISSIONS: dict[str, set[str]] = {
     # CASHIER: ring up sales, read catalog/inventory, view own receipts.
+    # Phase 4: cashiers can *read* the customer directory (the POS customer
+    # selector runs under the signed-in cashier) but cannot edit customer or
+    # supplier profiles and cannot collect khata payments — money collection
+    # is restricted to ADMIN/OWNER so dues cannot be written off at the till.
     "CASHIER": {
         "sale:create",
         "sale:read",
         "product:read",
         "inventory:read",
+        "customer:read",
+        "supplier:read",
     },
     # ADMIN: everything a cashier can, plus catalog + stock management
-    # (product/stock management required ADMIN).
+    # (product/stock management required ADMIN) + counterparty management.
     "ADMIN": {
         "sale:create", "sale:read", "product:read",
         "product:write", "product:deactivate",
         "inventory:read", "inventory:adjust",
         "stock_audit:read", "outbox:read",
+        "customer:read", "customer:write", "customer:payment",
+        "supplier:read", "supplier:write",
     },
     # OWNER: everything, including user management + audit trail.
     "OWNER": {
@@ -84,6 +92,8 @@ PERMISSIONS: dict[str, set[str]] = {
         "inventory:read", "inventory:adjust",
         "stock_audit:read", "outbox:read", "outbox:retry",
         "audit:read", "user:read", "user:write",
+        "customer:read", "customer:write", "customer:payment",
+        "supplier:read", "supplier:write",
     },
 }
 

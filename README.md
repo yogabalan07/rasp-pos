@@ -5,15 +5,18 @@ Management web application built for a **Raspberry Pi 3B+ edge server** with an
 offline-first architecture. The shop floor keeps billing when the internet does
 not; a **Firebase Cloud** sync layer is planned for a later phase.
 
-> **Current status: Phase 3 complete** — real FastAPI + SQLite backend, real
+> **Current status: Phase 4 complete** — real FastAPI + SQLite backend, real
 > auth/sessions/RBAC, atomic POS sales, a fully server-driven **Products +
-> Inventory** module, and now a fully server-driven **POS billing** workflow
-> (debounced server search, item + bill discounts, GST-inclusive totals,
-> CASH/UPI/CARD/CREDIT tenders, idempotent checkout, sales history with search
-> and date filters). See **[PHASE1.md](./PHASE1.md)** for the core API,
-> **[PHASE2.md](./PHASE2.md)** for the catalogue/inventory API and
-> **[PHASE3.md](./PHASE3.md)** for the billing rules. Still not built: sync,
-> printing, returns, customers/Khata, reports, AI.
+> Inventory** module, a fully server-driven **POS billing** workflow, and now
+> **Customers + Suppliers + Khata**: persistent directories with server codes,
+> an append-only khata ledger whose balance is only ever derived from its
+> entries, credit limits enforced inside the sale transaction, idempotent
+> payment collection, and POS credit sales that post real receivables. See
+> **[PHASE1.md](./PHASE1.md)** for the core API,
+> **[PHASE2.md](./PHASE2.md)** for the catalogue/inventory API,
+> **[PHASE3.md](./PHASE3.md)** for the billing rules and
+> **[PHASE4.md](./PHASE4.md)** for customers/khata. Still not built: sync,
+> printing, purchases/returns, reports, AI.
 
 ---
 
@@ -78,13 +81,20 @@ not; a **Firebase Cloud** sync layer is planned for a later phase.
     - Batch/expiry (FEFO) and warehouses: UI present, **TODO (later phase)**
 
 5. **Financials & Khata**:
-   - Customer credit (Khata) ledger, cash register, shifts with X/Z reports:
-      UI present, **TODO (later phase)** (no server backing yet)
+   - Customer directory with server codes (`CUST-0001`), credit limits and an
+      append-only **khata ledger** (balances always derived from entries)
+   - Khata receivables screen with idempotent payment collection; CREDIT sales
+      are limit-checked inside the sale transaction
+   - Supplier directory (`SUPP-0001`) with a mirrored payable ledger and an
+      idempotent payment primitive
+   - Cash register, shifts with X/Z reports: UI present, **TODO (later phase)**
 
 6. **Role-Based Access Control (enforced by the API)**:
    - `OWNER` — everything, incl. users, audit log, outbox retry
-   - `ADMIN` — catalog + stock management, stock audits, outbox read
-   - `CASHIER` — ring up sales, read catalog & inventory
+   - `ADMIN` — catalog + stock management, stock audits, outbox read,
+     customer/supplier profiles and money collection
+   - `CASHIER` — ring up sales, read catalog & inventory, look customers up
+     at the till (khata writes and payments stay ADMIN/OWNER)
 
    The old demo role switcher is gone; permissions come from the session.
 
@@ -134,7 +144,7 @@ npm run lint       # tsc --noEmit
 
 ```powershell
 cd backend
- .\.venv\Scripts\python -m pytest tests    # 161 tests
+ .\.venv\Scripts\python -m pytest tests    # 217 tests
 ```
 
 ### 6. Raspberry Pi deployment
@@ -150,6 +160,7 @@ See **[PHASE1.md §6](./PHASE1.md#6-deploying-on-the-raspberry-pi)** —
 - [PHASE1.md](./PHASE1.md) — core API reference, permission matrix, rules, TODOs
 - [PHASE2.md](./PHASE2.md) — products + inventory API, stock rules, schema v2
 - [PHASE3.md](./PHASE3.md) — real POS billing: discounts, GST, tenders, receipts
+- [PHASE4.md](./PHASE4.md) — customers, suppliers, khata ledger, schema v3
 - [PHASE3_BASELINE.md](./PHASE3_BASELINE.md) — pre-Phase-3 scope decisions
 - [PHASE2_BASELINE.md](./PHASE2_BASELINE.md) — pre-Phase-2 scope decisions
 - [PHASE1_BASELINE.md](./PHASE1_BASELINE.md) — pre-Phase-1 code audit

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -144,6 +144,11 @@ CREATE TABLE IF NOT EXISTS sales (
 );
 CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_bill_no ON sales(bill_no);
+-- Phase 4: every khata query filters `sales` by customer and orders by time
+-- (customer history, the customer-list aggregates). `created_at` alone cannot
+-- serve `WHERE customer_id = ?`, and this composite also covers the
+-- `GROUP BY customer_id` subquery, so it is not a duplicate of the two above.
+CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id, created_at);
 
 -- ----------------------------------------------------------- sale_lines
 -- Product info is snapshotted: later catalog edits never rewrite history.
@@ -215,6 +220,146 @@ CREATE TABLE IF NOT EXISTS bill_counters (
     day         TEXT PRIMARY KEY,
     next_value  INTEGER NOT NULL
 );
+
+-- ----------------------------------------------------------- customers
+-- Phase 4: customer directory + khata (credit) accounts. There is deliberately
+-- NO `outstanding_paise` column: the balance is always derived from
+-- `customer_ledger_entries` (RULE: balance only via ledger rows).
+CREATE TABLE IF NOT EXISTS customers (
+    id                TEXT PRIMARY KEY,
+    code              TEXT NOT NULL UNIQUE,
+    name              TEXT NOT NULL,
+    phone             TEXT NOT NULL DEFAULT '',
+    email             TEXT NOT NULL DEFAULT '',
+    address           TEXT NOT NULL DEFAULT '',
+    gstin             TEXT NOT NULL DEFAULT '',
+    credit_limit_paise INTEGER NOT NULL DEFAULT 0
+                       CHECK (credit_limit_paise >= 0),
+    is_active         INTEGER NOT NULL DEFAULT 1,
+    notes             TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    created_by        TEXT REFERENCES users(id),
+    updated_by        TEXT REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
+CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
+CREATE INDEX IF NOT EXISTS idx_customers_gstin ON customers(gstin);
+CREATE INDEX IF NOT EXISTS idx_customers_active ON customers(is_active);
+
+-- ------------------------------------------------------------ suppliers
+-- Phase 4: supplier directory. Purchases/PO/GRN are a LATER phase — only the
+-- profile + a reserved payable ledger land now.
+CREATE TABLE IF NOT EXISTS suppliers (
+    id                TEXT PRIMARY KEY,
+    code              TEXT NOT NULL UNIQUE,
+    name              TEXT NOT NULL,
+    contact_person    TEXT NOT NULL DEFAULT '',
+    phone             TEXT NOT NULL DEFAULT '',
+    email             TEXT NOT NULL DEFAULT '',
+    address           TEXT NOT NULL DEFAULT '',
+    gstin             TEXT NOT NULL DEFAULT '',
+    payment_terms     TEXT NOT NULL DEFAULT 'Net 30 Days',
+    credit_limit_paise INTEGER NOT NULL DEFAULT 0
+                       CHECK (credit_limit_paise >= 0),
+    is_active         INTEGER NOT NULL DEFAULT 1,
+    notes             TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    created_by        TEXT REFERENCES users(id),
+    updated_by        TEXT REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers(name);
+CREATE INDEX IF NOT EXISTS idx_suppliers_phone ON suppliers(phone);
+CREATE INDEX IF NOT EXISTS idx_suppliers_gstin ON suppliers(gstin);
+CREATE INDEX IF NOT EXISTS idx_suppliers_active ON suppliers(is_active);
+
+-- -------------------------------------------------- customer_ledger_entries
+-- Append-only khata book: rows are INSERTed, never UPDATEd/DELETEd by app
+-- code.  Accounting direction for a customer receivable:
+--   debit_paise  -> customer owes MORE   (credit sale)
+--   credit_paise -> customer owes LESS   (payment collected)
+--   balance_after_paise is the running outstanding after this entry.
+-- `idempotency_key` is UNIQUE so a replayed request can never double-post.
+CREATE TABLE IF NOT EXISTS customer_ledger_entries (
+    id                 TEXT PRIMARY KEY,
+    customer_id        TEXT NOT NULL REFERENCES customers(id),
+    entry_type         TEXT NOT NULL CHECK (entry_type IN (
+                        'CREDIT_SALE','PAYMENT','ADJUSTMENT','REVERSAL')),
+    reference_type     TEXT,
+    reference_id       TEXT,
+    debit_paise        INTEGER NOT NULL DEFAULT 0 CHECK (debit_paise >= 0),
+    credit_paise       INTEGER NOT NULL DEFAULT 0 CHECK (credit_paise >= 0),
+    balance_after_paise INTEGER NOT NULL DEFAULT 0
+                        CHECK (balance_after_paise >= 0),
+    description        TEXT NOT NULL DEFAULT '',
+    idempotency_key    TEXT UNIQUE,
+    created_at         TEXT NOT NULL,
+    created_by         TEXT REFERENCES users(id),
+    CHECK (debit_paise > 0 OR credit_paise > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_cust_ledger_customer
+    ON customer_ledger_entries(customer_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_cust_ledger_reference
+    ON customer_ledger_entries(reference_type, reference_id);
+CREATE INDEX IF NOT EXISTS idx_cust_ledger_type
+    ON customer_ledger_entries(entry_type, created_at);
+
+-- ------------------------------------------------------- customer_payments
+-- Khata collections recorded against a customer (never against a sale).
+-- `idempotency_key` makes POST /customers/{id}/payments replay-safe.
+CREATE TABLE IF NOT EXISTS customer_payments (
+    id              TEXT PRIMARY KEY,
+    customer_id     TEXT NOT NULL REFERENCES customers(id),
+    amount_paise    INTEGER NOT NULL CHECK (amount_paise > 0),
+    payment_method  TEXT NOT NULL CHECK (payment_method IN ('CASH','UPI','CARD')),
+    reference       TEXT NOT NULL DEFAULT '',
+    notes           TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT UNIQUE,
+    ledger_entry_id TEXT REFERENCES customer_ledger_entries(id),
+    created_at      TEXT NOT NULL,
+    created_by      TEXT NOT NULL REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_cust_payments_customer
+    ON customer_payments(customer_id, created_at);
+
+-- ---------------------------------------------------- supplier_ledger_entries
+-- Mirror image of the customer book (payable is credit-nature):
+--   credit_paise -> we owe the supplier MORE (purchase)
+--   debit_paise  -> we owe the supplier LESS (payment made)
+-- Phase 4 ships the table + service primitives only; PURCHASE entries are
+-- written by a later phase (purchases/GRN).
+CREATE TABLE IF NOT EXISTS supplier_ledger_entries (
+    id                 TEXT PRIMARY KEY,
+    supplier_id        TEXT NOT NULL REFERENCES suppliers(id),
+    entry_type         TEXT NOT NULL CHECK (entry_type IN (
+                        'PURCHASE','PAYMENT','ADJUSTMENT','REVERSAL')),
+    reference_type     TEXT,
+    reference_id       TEXT,
+    debit_paise        INTEGER NOT NULL DEFAULT 0 CHECK (debit_paise >= 0),
+    credit_paise       INTEGER NOT NULL DEFAULT 0 CHECK (credit_paise >= 0),
+    balance_after_paise INTEGER NOT NULL DEFAULT 0
+                        CHECK (balance_after_paise >= 0),
+    description        TEXT NOT NULL DEFAULT '',
+    idempotency_key    TEXT UNIQUE,
+    created_at         TEXT NOT NULL,
+    created_by         TEXT REFERENCES users(id),
+    CHECK (debit_paise > 0 OR credit_paise > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_sup_ledger_supplier
+    ON supplier_ledger_entries(supplier_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_sup_ledger_reference
+    ON supplier_ledger_entries(reference_type, reference_id);
+
+-- --------------------------------------------------------- code_counters
+-- Gapless human codes: CUST-0001 / SUPP-0001. Seeded rows below so a brand
+-- new database starts at 1 and an upgraded one keeps its sequence.
+CREATE TABLE IF NOT EXISTS code_counters (
+    kind        TEXT PRIMARY KEY,
+    next_value  INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO code_counters(kind, next_value) VALUES('customer', 1);
+INSERT OR IGNORE INTO code_counters(kind, next_value) VALUES('supplier', 1);
 """
 
 MOVEMENT_TYPE_CHECK_SQL = """(
@@ -297,9 +442,13 @@ def migration_2_products_inventory(conn: sqlite3.Connection) -> None:
 
 # Ordered, idempotent migrations applied after SCHEMA_SQL.
 # Entries are (target_version, sql_or_callable).
+# Migration 3 (Phase 4) only bumps the meta version: the customers / suppliers /
+# ledger tables are brand-new, so `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL
+# builds them on both fresh and upgraded databases.
 MIGRATIONS: list[tuple[str, object]] = [
     ("1", "UPDATE schema_meta SET value='1' WHERE key='version'"),
     ("2", migration_2_products_inventory),
+    ("3", "UPDATE schema_meta SET value='3' WHERE key='version'"),
 ]
 
 

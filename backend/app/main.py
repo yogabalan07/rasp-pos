@@ -17,7 +17,16 @@ from .database import connect, transaction
 from .db.schema import init_db
 from .db.seed import seed_if_empty
 from .errors import register_error_handlers
-from .routes import auth, health, inventory, outbox, products, sales
+from .routes import (
+    auth,
+    customers,
+    health,
+    inventory,
+    outbox,
+    products,
+    sales,
+    suppliers,
+)
 
 log = logging.getLogger("ybpos")
 
@@ -71,6 +80,8 @@ def create_app() -> FastAPI:
     app.include_router(inventory.router, prefix="/api")
     app.include_router(sales.router, prefix="/api")
     app.include_router(outbox.router, prefix="/api")
+    app.include_router(customers.router, prefix="/api")
+    app.include_router(suppliers.router, prefix="/api")
 
     @app.get("/", include_in_schema=False)
     def root():

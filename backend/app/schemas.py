@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .utils.money import MAX_MONEY_PAISE, to_paise
 
 Role = Literal["OWNER", "ADMIN", "CASHIER"]
 PaymentMethod = Literal["CASH", "UPI", "CARD", "CREDIT"]
@@ -140,3 +142,106 @@ class CreateSaleRequest(ApiModel):
     customer_id: Optional[str] = Field(default=None, max_length=64)
     customer_name: Optional[str] = Field(default=None, max_length=200)
     customer_phone: Optional[str] = Field(default=None, max_length=32)
+
+
+# ------------------------------------------------- customers (Phase 4)
+
+class CustomerCreate(ApiModel):
+    """New khata customer. Codes (CUST-0001) are assigned by the server."""
+
+    name: str = Field(min_length=1, max_length=200)
+    phone: str = Field(min_length=1, max_length=32)
+    email: str = Field(default="", max_length=200)
+    address: str = Field(default="", max_length=300)
+    gstin: str = Field(default="", max_length=20)
+    credit_limit_paise: int = Field(default=0, ge=0, le=MAX_MONEY_PAISE)
+    notes: str = Field(default="", max_length=500)
+
+
+class CustomerUpdate(ApiModel):
+    """Partial profile edit.
+
+    Deliberately absent: `code` (identity) and any outstanding/balance field -
+    the balance is derived from ledger rows and is not editable, so a payload
+    that tries to set it is rejected by `extra="forbid"` with 422.
+    """
+
+    name: Optional[str] = Field(default=None, max_length=200)
+    phone: Optional[str] = Field(default=None, max_length=32)
+    email: Optional[str] = Field(default=None, max_length=200)
+    address: Optional[str] = Field(default=None, max_length=300)
+    gstin: Optional[str] = Field(default=None, max_length=20)
+    credit_limit_paise: Optional[int] = Field(default=None, ge=0, le=MAX_MONEY_PAISE)
+    notes: Optional[str] = Field(default=None, max_length=500)
+    is_active: Optional[bool] = None
+
+
+class PaymentRequest(ApiModel):
+    """Shared body for customer + supplier money collection.
+
+    `amount_paise` is authoritative (INTEGER paise, RULE 4). `amount` is the
+    public rupee alias: it is converted with `to_paise()` here, in the request
+    model, so the service layer only ever sees one field. Exactly one of the
+    two may be supplied; both missing reaches the service, which answers
+    `400 INVALID_PAYMENT_AMOUNT`.
+    """
+
+    amount_paise: Optional[int] = Field(default=None, ge=0, le=MAX_MONEY_PAISE)
+    amount: Optional[float] = None
+    reference: str = Field(default="", max_length=200)
+    notes: str = Field(default="", max_length=500)
+    idempotency_key: Optional[str] = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def _normalise_amount(self) -> "PaymentRequest":
+        if self.amount_paise is not None and self.amount is not None:
+            raise ValueError("Provide amount_paise or amount, not both")
+        if self.amount_paise is None and self.amount is not None:
+            try:
+                paise = to_paise(self.amount)
+            except (ValueError, TypeError):
+                raise ValueError(f"invalid money value: {self.amount!r}") from None
+            if paise < 0 or paise > MAX_MONEY_PAISE:
+                raise ValueError(
+                    f"amount must be between 0 and {MAX_MONEY_PAISE} paise"
+                )
+            self.amount_paise = paise
+        self.amount = None
+        return self
+
+
+class CustomerPaymentRequest(PaymentRequest):
+    """Khata collection: `{amount_paise}` or the rupee alias `{amount}`."""
+
+    payment_method: Literal["CASH", "UPI", "CARD"] = "CASH"
+
+
+# ------------------------------------------------- suppliers (Phase 4)
+
+class SupplierCreate(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+    contact_person: str = Field(default="", max_length=120)
+    phone: str = Field(min_length=1, max_length=32)
+    email: str = Field(default="", max_length=200)
+    address: str = Field(default="", max_length=300)
+    gstin: str = Field(default="", max_length=20)
+    payment_terms: str = Field(default="Net 30 Days", max_length=60)
+    credit_limit_paise: int = Field(default=0, ge=0, le=MAX_MONEY_PAISE)
+    notes: str = Field(default="", max_length=500)
+
+
+class SupplierUpdate(ApiModel):
+    name: Optional[str] = Field(default=None, max_length=200)
+    contact_person: Optional[str] = Field(default=None, max_length=120)
+    phone: Optional[str] = Field(default=None, max_length=32)
+    email: Optional[str] = Field(default=None, max_length=200)
+    address: Optional[str] = Field(default=None, max_length=300)
+    gstin: Optional[str] = Field(default=None, max_length=20)
+    payment_terms: Optional[str] = Field(default=None, max_length=60)
+    credit_limit_paise: Optional[int] = Field(default=None, ge=0, le=MAX_MONEY_PAISE)
+    notes: Optional[str] = Field(default=None, max_length=500)
+    is_active: Optional[bool] = None
+
+
+class SupplierPaymentRequest(PaymentRequest):
+    """Same money contract as `CustomerPaymentRequest` (see its docstring)."""

@@ -12,6 +12,12 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 PAISE_PER_RUPEE = 100
 
+# Upper bound for a single money value accepted at the API boundary.
+# 1e12 paise == Rs.10,000,000,000 (Rs.1000 crore): far above any realistic
+# Indian retail POS transaction, yet ~9.2 million times below SQLite's INTEGER
+# limit (9.2e18), so sums of bounded values can never overflow a column.
+MAX_MONEY_PAISE = 1_000_000_000_000
+
 
 def to_paise(amount) -> int:
     """Convert rupees (int | str | Decimal, never binary float math) to paise.

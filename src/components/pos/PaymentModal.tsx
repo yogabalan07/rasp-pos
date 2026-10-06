@@ -69,12 +69,20 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   ].filter((v, i, a) => v >= totalAmount && a.indexOf(v) === i).slice(0, 4);
 
   const isWalkIn = customer.id === 'cust-walkin';
+  const availableCredit = Math.max(0, customer.creditLimit - customer.outstandingBalance);
+  const creditExceedsLimit =
+    method === 'CREDIT' && customer.creditLimit > 0 && customer.outstandingBalance + totalAmount > customer.creditLimit;
+  const creditDisabled =
+    method === 'CREDIT' && (customer.creditLimit <= 0 || creditExceedsLimit);
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (isProcessing) return;
     if (method === 'CASH' && tendered < totalAmount) {
       return; // Cannot pay less than total for cash
+    }
+    if (creditDisabled) {
+      return; // UX guard only — the server enforces the credit limit.
     }
 
     onComplete({
@@ -138,6 +146,13 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               );
             })}
           </div>
+
+          {/* Walk-in has no khata — spell out what the cashier must do. */}
+          {isWalkIn && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-200">
+              Select a customer for credit sale. (F3)
+            </p>
+          )}
 
           {/* CASH Panel */}
           {method === 'CASH' && (
@@ -230,11 +245,33 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                   <span>Credit Limit:</span>
                   <span className="font-bold font-tabular">₹{customer.creditLimit.toFixed(2)}</span>
                 </div>
+                <div className="flex justify-between">
+                  <span>Available Credit:</span>
+                  <span className="font-bold font-tabular">₹{availableCredit.toFixed(2)}</span>
+                </div>
                 <div className="flex justify-between border-t border-amber-200/80 pt-1 text-amber-950 dark:text-amber-100 font-bold">
                   <span>New Outstanding:</span>
                   <span className="font-tabular">₹{(customer.outstandingBalance + totalAmount).toFixed(2)}</span>
                 </div>
               </div>
+
+              {customer.creditLimit <= 0 ? (
+                <p className="rounded border border-red-300 bg-red-50 p-2 text-xs font-semibold text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                  This customer has no credit limit (₹0) — credit sales are disabled. Collect another
+                  tender or raise the limit in Customers.
+                </p>
+              ) : creditExceedsLimit ? (
+                <p className="rounded border border-red-300 bg-red-50 p-2 text-xs font-semibold text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                  ₹{(customer.outstandingBalance + totalAmount).toFixed(2)} exceeds this customer's
+                  credit limit of ₹{customer.creditLimit.toFixed(2)} by{' '}
+                  ₹{(customer.outstandingBalance + totalAmount - customer.creditLimit).toFixed(2)}.
+                  Take part payment or reduce the bill — the server will reject this sale.
+                </p>
+              ) : (
+                <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                  ₹{availableCredit.toFixed(2)} of headroom remains after this sale.
+                </p>
+              )}
             </div>
           )}
 
@@ -255,7 +292,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           <button
             type="button"
             onClick={() => handleSubmit()}
-            disabled={isProcessing || (method === 'CASH' && tendered < totalAmount)}
+            disabled={isProcessing || (method === 'CASH' && tendered < totalAmount) || creditDisabled}
             className="flex items-center gap-2 rounded-lg bg-emerald-600 px-6 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
           >
             <span>

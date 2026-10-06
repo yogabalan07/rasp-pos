@@ -426,6 +426,17 @@ def test_credit_requires_customer(client, cashier, db):
     assert anonymous.json()["code"] == "CUSTOMER_REQUIRED_FOR_CREDIT"
     assert db.execute("SELECT COUNT(*) FROM sales").fetchone()[0] == 0
 
+    # Phase 4: a credit sale needs a REAL `customers` row — the free-text
+    # customer id the Phase 3 UI used to send is now rejected with 404.
+    db.execute(
+        """
+        INSERT INTO customers(id, code, name, phone, credit_limit_paise,
+                              is_active, created_at, updated_at)
+        VALUES('cust-walkin-1', 'CUST-0901', 'Walk-in Customer', '9876543210',
+               100000, 1, '2026-10-01T08:00:00+00:00', '2026-10-01T08:00:00+00:00')
+        """
+    )
+
     with_customer = client.post(
         "/api/sales",
         json=sale_payload(

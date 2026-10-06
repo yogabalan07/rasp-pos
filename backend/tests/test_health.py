@@ -8,7 +8,7 @@ def test_health_ok(client):
     assert body["ok"] is True
     assert body["data"]["status"] == "ok"
     assert body["data"]["database"] == "ok"
-    assert body["data"]["phase"] == 3
+    assert body["data"]["phase"] == 4
 
 
 def test_status_reports_seed_and_schema(client, owner):
@@ -16,7 +16,7 @@ def test_status_reports_seed_and_schema(client, owner):
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["database"] == "connected"
-    assert data["schemaVersion"] == 2
+    assert data["schemaVersion"] == 3
     assert data["users"] == 3
     assert data["products"] == 16
     assert data["journalMode"] == "wal"
