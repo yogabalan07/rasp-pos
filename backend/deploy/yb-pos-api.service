@@ -1,0 +1,43 @@
+[Unit]
+Description=YB Inventory & POS - Raspberry Pi edge API (FastAPI + SQLite)
+Documentation=file:///opt/yb-pos/PHASE1.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/yb-pos/backend
+
+# The Pi API is the transaction authority for the shop floor.
+Environment=YB_ENV=production
+Environment=YB_DB_PATH=/opt/yb-pos/backend/data/yb_pos.sqlite3
+# Set to true only when TLS terminates in front of this service (e.g. nginx + certbot).
+Environment=YB_COOKIE_SECURE=false
+Environment=YB_CORS_ORIGINS=http://10.205.100.50,http://localhost
+Environment=YB_SEED_ON_EMPTY=true
+
+# ONE worker on purpose: bill numbering and BEGIN IMMEDIATE stock locks are
+# simplest to reason about inside a single process. Scale reads with nginx.
+ExecStart=/opt/yb-pos/backend/.venv/bin/uvicorn \
+    app.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1 \
+    --log-level info
+
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Hardening (the data directory lives under /opt/yb-pos/backend/data)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/yb-pos/backend/data
+
+[Install]
+WantedBy=multi-user.target

@@ -123,8 +123,22 @@ const RouterView: React.FC = () => {
 };
 
 const MainLayout: React.FC = () => {
-  const { activeRoute } = useApp();
+  const { activeRoute, currentUser, authLoading } = useApp();
   const isAuthPage = ['/login', '/register', '/pin-login', '/forgot-password'].includes(activeRoute);
+  const signedIn = currentUser !== null;
+
+  if (authLoading) {
+    return (
+      <div className="flex h-screen w-screen flex-col items-center justify-center bg-neutral-100 dark:bg-neutral-950">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-neutral-900 font-black text-sm text-white dark:bg-white dark:text-neutral-950">
+          YB
+        </div>
+        <p className="mt-3 text-xs font-medium text-neutral-500">
+          Starting terminal&hellip;
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-neutral-100 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 font-sans">
@@ -132,9 +146,9 @@ const MainLayout: React.FC = () => {
       <OfflineBanner />
 
       <div className="flex flex-1 overflow-hidden">
-        {!isAuthPage && <Sidebar />}
+        {signedIn && !isAuthPage && <Sidebar />}
         <main className="flex-1 overflow-y-auto bg-neutral-50 dark:bg-neutral-950 relative">
-          <RouterView />
+          {!signedIn || isAuthPage ? <AuthPages /> : <RouterView />}
         </main>
       </div>
 

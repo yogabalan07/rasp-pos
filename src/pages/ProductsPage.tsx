@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Product, Category } from '../types';
 import { productsService } from '../services/products';
+import { inventoryService } from '../services/inventory';
+import { ApiError } from '../services/api';
 import { useApp } from '../context/AppContext';
 import { 
   Search, 
@@ -13,15 +15,28 @@ import {
   Filter, 
   Check, 
   X,
-  AlertCircle
+  AlertCircle,
+  Loader2,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
+
+const PAGE_SIZE = 25;
 
 export const ProductsPage: React.FC = () => {
   const { showToast } = useApp();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [subcategories, setSubcategories] = useState<string[]>([]);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedCat, setSelectedCat] = useState('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
 
@@ -31,6 +46,7 @@ export const ProductsPage: React.FC = () => {
   const [barcode, setBarcode] = useState('');
   const [brand, setBrand] = useState('');
   const [categoryId, setCategoryId] = useState('cat-bev');
+  const [subcategory, setSubcategory] = useState('');
   const [unit, setUnit] = useState('Piece');
   const [hsn, setHsn] = useState('');
   const [gstRate, setGstRate] = useState(18);
@@ -41,19 +57,49 @@ export const ProductsPage: React.FC = () => {
   const [stock, setStock] = useState('10');
   const [minStock, setMinStock] = useState('5');
   const [batchTracked, setBatchTracked] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    productsService.getCategories().then(r => setCategories(r.data)).catch(() => undefined);
+    productsService.getSubcategories().then(r => setSubcategories(r.data)).catch(() => undefined);
+  }, []);
+
+  // Server-side search: debounce keystrokes, then hit the API.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, selectedCat, statusFilter]);
+
+  const loadProducts = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const res = await productsService.listPage({
+        q: debouncedSearch || undefined,
+        category: selectedCat === 'ALL' ? undefined : selectedCat,
+        isActive: statusFilter === 'ALL' ? undefined : statusFilter === 'ACTIVE',
+        page,
+        pageSize: PAGE_SIZE,
+      });
+      setProducts(res.data.items);
+      setTotal(res.data.total);
+      setPages(res.data.pages);
+    } catch (err) {
+      setProducts([]);
+      setTotal(0);
+      setLoadError(err instanceof ApiError ? err.message : 'Could not load products');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [debouncedSearch, selectedCat, statusFilter, page]);
 
   useEffect(() => {
     loadProducts();
-  }, []);
-
-  const loadProducts = async () => {
-    const [pRes, cRes] = await Promise.all([
-      productsService.getAll(),
-      productsService.getCategories(),
-    ]);
-    setProducts(pRes.data);
-    setCategories(cRes.data);
-  };
+  }, [loadProducts]);
 
   const handleOpenCreate = () => {
     setEditingProduct(null);
@@ -62,6 +108,7 @@ export const ProductsPage: React.FC = () => {
     setBarcode(`890${Math.floor(1000000000 + Math.random() * 9000000000)}`);
     setBrand('');
     setCategoryId(categories[1]?.id || 'cat-bev');
+    setSubcategory('');
     setUnit('Piece');
     setHsn('210690');
     setGstRate(18);
@@ -82,6 +129,7 @@ export const ProductsPage: React.FC = () => {
     setBarcode(p.barcode);
     setBrand(p.brand);
     setCategoryId(p.categoryId);
+    setSubcategory(p.subcategory || '');
     setUnit(p.unit);
     setHsn(p.hsn);
     setGstRate(p.gstRate);
@@ -117,6 +165,7 @@ export const ProductsPage: React.FC = () => {
       brand: brand.trim() || 'General',
       categoryId,
       categoryName: catObj?.name || 'General',
+      subcategory: subcategory.trim(),
       unit,
       hsn: hsn.trim(),
       gstRate,
@@ -130,49 +179,77 @@ export const ProductsPage: React.FC = () => {
       batchTracked,
     };
 
-    if (editingProduct) {
-      await productsService.update(editingProduct.id, payload);
-      showToast('Product updated successfully', 'success');
-    } else {
-      await productsService.create(payload);
-      showToast('New product added to catalog', 'success');
+    setIsSaving(true);
+    try {
+      if (editingProduct) {
+        await productsService.replace(editingProduct.id, payload);
+        // Stock is owned by the inventory ledger: post one audited adjustment
+        // when the form changed the quantity.
+        const delta = stk - editingProduct.stock;
+        if (delta !== 0) {
+          await inventoryService.recordStockAdjustment(
+            editingProduct.id,
+            payload.name,
+            payload.sku,
+            delta,
+            editingProduct.stock,
+            'Stock corrected from the product form',
+          );
+        }
+        showToast('Product updated successfully', 'success');
+      } else {
+        await productsService.create(payload);
+        showToast('New product added to catalog', 'success');
+      }
+      setIsModalOpen(false);
+      loadProducts();
+    } catch (err) {
+      showToast(
+        err instanceof ApiError ? err.message : 'Could not save the product',
+        'error',
+      );
+    } finally {
+      setIsSaving(false);
     }
-
-    setIsModalOpen(false);
-    loadProducts();
   };
 
-  const handleDelete = async (id: string, name: string) => {
-    if (confirm(`Are you sure you want to delete ${name}?`)) {
-      await productsService.delete(id);
-      showToast('Product removed', 'info');
+  const handleDeactivate = async (p: Product) => {
+    if (!confirm(`Deactivate ${p.name}? It will be hidden from the POS but kept in history.`)) {
+      return;
+    }
+    try {
+      await productsService.setStatus(p.id, false);
+      showToast(`${p.name} deactivated`, 'info');
       loadProducts();
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Could not deactivate', 'error');
+    }
+  };
+
+  const handleActivate = async (p: Product) => {
+    try {
+      await productsService.setStatus(p.id, true);
+      showToast(`${p.name} is active again`, 'success');
+      loadProducts();
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Could not activate', 'error');
     }
   };
 
   const handleDuplicate = async (p: Product) => {
-    await productsService.create({
-      ...p,
-      name: `${p.name} (Copy)`,
-      sku: `${p.sku}-CP`,
-      barcode: `890${Math.floor(1000000000 + Math.random() * 9000000000)}`,
-    });
-    showToast(`Duplicated ${p.name}`, 'success');
-    loadProducts();
+    try {
+      await productsService.create({
+        ...p,
+        name: `${p.name} (Copy)`,
+        sku: `${p.sku}-CP`,
+        barcode: `890${Math.floor(1000000000 + Math.random() * 9000000000)}`,
+      });
+      showToast(`Duplicated ${p.name}`, 'success');
+      loadProducts();
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Could not duplicate', 'error');
+    }
   };
-
-  const filtered = products.filter(p => {
-    const matchesCat = selectedCat === 'ALL' || p.categoryId === selectedCat;
-    if (!matchesCat) return false;
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return (
-      p.name.toLowerCase().includes(q) ||
-      p.sku.toLowerCase().includes(q) ||
-      p.barcode.includes(q) ||
-      p.brand.toLowerCase().includes(q)
-    );
-  });
 
   return (
     <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 max-w-7xl mx-auto">
@@ -221,8 +298,28 @@ export const ProductsPage: React.FC = () => {
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
+
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
+            className="rounded border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+          >
+            <option value="ALL">All Status</option>
+            <option value="ACTIVE">Active</option>
+            <option value="INACTIVE">Inactive</option>
+          </select>
         </div>
       </div>
+
+      {loadError && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>{loadError}</span>
+          <button onClick={loadProducts} className="ml-auto font-semibold underline">
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-xs dark:border-neutral-800 dark:bg-neutral-900">
@@ -242,7 +339,29 @@ export const ProductsPage: React.FC = () => {
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-            {filtered.map(p => (
+            {isLoading && (
+              <tr>
+                <td colSpan={10} className="py-10 text-center text-neutral-400">
+                  <Loader2 className="mx-auto h-5 w-5 animate-spin" />
+                  <p className="mt-2 text-xs">Loading products…</p>
+                </td>
+              </tr>
+            )}
+
+            {!isLoading && products.length === 0 && (
+              <tr>
+                <td colSpan={10} className="py-10 text-center text-neutral-400">
+                  <Package className="mx-auto h-6 w-6" />
+                  <p className="mt-2 text-xs">
+                    {debouncedSearch || selectedCat !== 'ALL' || statusFilter !== 'ALL'
+                      ? 'No products match the current filters.'
+                      : 'No products yet. Add your first product to get started.'}
+                  </p>
+                </td>
+              </tr>
+            )}
+
+            {!isLoading && products.map(p => (
               <tr key={p.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/40">
                 <td className="py-3 px-4">
                   <p className="font-bold text-neutral-900 dark:text-white">{p.name}</p>
@@ -254,13 +373,16 @@ export const ProductsPage: React.FC = () => {
                 </td>
                 <td className="py-3 px-4 text-neutral-600 dark:text-neutral-400">
                   {p.categoryName}
+                  {p.subcategory && (
+                    <span className="block text-[10px] text-neutral-400">{p.subcategory}</span>
+                  )}
                 </td>
                 <td className="py-3 px-4 text-center font-bold font-tabular">
                   <span className={`px-2 py-0.5 rounded text-[11px] ${
-                    p.stock === 0 
-                      ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300' 
-                      : p.stock <= p.minStock 
-                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300' 
+                    p.status === 'OUT_OF_STOCK'
+                      ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                      : p.status === 'LOW_STOCK'
+                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
                       : 'text-neutral-800 dark:text-neutral-200'
                   }`}>
                     {p.stock} {p.unit}
@@ -284,6 +406,8 @@ export const ProductsPage: React.FC = () => {
                       ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
                       : p.status === 'LOW_STOCK'
                       ? 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                      : p.status === 'INACTIVE'
+                      ? 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
                       : 'bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300'
                   }`}>
                     {p.status.replace('_', ' ')}
@@ -304,18 +428,53 @@ export const ProductsPage: React.FC = () => {
                   >
                     <Copy className="h-3.5 w-3.5" />
                   </button>
-                  <button
-                    onClick={() => handleDelete(p.id, p.name)}
-                    className="p-1 rounded text-neutral-400 hover:text-red-600 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                    title="Delete"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  {p.status === 'INACTIVE' ? (
+                    <button
+                      onClick={() => handleActivate(p)}
+                      className="p-1 rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950"
+                      title="Activate Product"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => handleDeactivate(p)}
+                      className="p-1 rounded text-neutral-400 hover:text-red-600 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                      title="Deactivate Product"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+
+        {/* Server-side pagination */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-neutral-200 bg-neutral-50 px-4 py-2 text-[11px] text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800/50">
+          <span>
+            {total} product{total === 1 ? '' : 's'} · Page {page} of {Math.max(pages, 1)}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page <= 1 || isLoading}
+              className="rounded border border-neutral-200 bg-white p-1 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900"
+              title="Previous page"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => setPage(p => Math.min(pages, p + 1))}
+              disabled={page >= pages || isLoading}
+              className="rounded border border-neutral-200 bg-white p-1 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900"
+              title="Next page"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Create / Edit Modal */}
@@ -373,6 +532,25 @@ export const ProductsPage: React.FC = () => {
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">
+                    Subcategory
+                  </label>
+                  <input
+                    type="text"
+                    list="subcategory-options"
+                    value={subcategory}
+                    onChange={e => setSubcategory(e.target.value)}
+                    placeholder="e.g. Biscuits / Dairy / Instant Coffee"
+                    className="mt-1 w-full rounded-md border border-neutral-300 p-2 text-xs bg-white dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
+                  />
+                  <datalist id="subcategory-options">
+                    {subcategories.map(s => (
+                      <option key={s} value={s} />
+                    ))}
+                  </datalist>
                 </div>
 
                 <div>
@@ -523,9 +701,10 @@ export const ProductsPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700"
+                  disabled={isSaving}
+                  className="rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
                 >
-                  Save Product
+                  {isSaving ? 'Saving…' : 'Save Product'}
                 </button>
               </div>
             </form>

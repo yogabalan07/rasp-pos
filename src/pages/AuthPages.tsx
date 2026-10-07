@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { authService, SYSTEM_USERS } from '../services/auth';
+import { authService } from '../services/auth';
 import { 
   Server, 
   Cloud, 
@@ -15,12 +15,13 @@ import {
 } from 'lucide-react';
 
 export const AuthPages: React.FC = () => {
-  const { systemStatus, navigateTo, showToast } = useApp();
+  const { systemStatus, navigateTo, showToast, refreshUser } = useApp();
   const [authMode, setAuthMode] = useState<'LOGIN' | 'PIN' | 'REGISTER' | 'FORGOT'>('LOGIN');
+  const [busy, setBusy] = useState(false);
 
   // Login form
-  const [email, setEmail] = useState('yogabalan2007yoga@gmail.com');
-  const [password, setPassword] = useState('password123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   // PIN form
   const [pin, setPin] = useState('');
@@ -32,22 +33,27 @@ export const AuthPages: React.FC = () => {
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setBusy(true);
     try {
-      await authService.loginWithEmail(email, password);
-      showToast('Logged in successfully', 'success');
+      await authService.login(email.trim(), password);
+      await refreshUser();
+      showToast('Signed in successfully', 'success');
       navigateTo('/pos');
     } catch (err: any) {
-      showToast(err.message, 'error');
+      showToast(err.message || 'Sign in failed', 'error');
+    } finally {
+      setBusy(false);
     }
   };
 
   const handlePinSubmit = async (enteredPin: string) => {
     try {
       await authService.loginWithPin(enteredPin);
-      showToast('Cashier authenticated via PIN', 'success');
+      await refreshUser();
+      showToast('PIN authenticated', 'success');
       navigateTo('/pos');
     } catch (err: any) {
-      showToast(err.message, 'error');
+      showToast(err.message || 'Invalid PIN', 'error');
       setPin('');
     }
   };
@@ -110,11 +116,13 @@ export const AuthPages: React.FC = () => {
               <div className="relative mt-1">
                 <Mail className="absolute left-3 top-2.5 h-4 w-4 text-neutral-400" />
                 <input
-                  type="email"
+                  type="text"
                   required
+                  autoFocus
+                  placeholder="Username or email"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
-                  className="w-full rounded-lg border border-neutral-300 bg-white pl-9 pr-3 py-2 text-xs text-neutral-900 focus:border-neutral-900 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
+                  className="w-full rounded-lg border border-neutral-300 bg-white pl-9 pr-3 py-2 text-xs text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-900 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
                 />
               </div>
             </div>
@@ -144,9 +152,10 @@ export const AuthPages: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full rounded-lg bg-neutral-900 py-2.5 text-xs font-bold text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-950 transition-colors"
+              disabled={busy}
+              className="w-full rounded-lg bg-neutral-900 py-2.5 text-xs font-bold text-white hover:bg-neutral-800 disabled:opacity-60 dark:bg-white dark:text-neutral-950 transition-colors"
             >
-              Sign In to Terminal
+              {busy ? 'Signing in…' : 'Sign In to Terminal'}
             </button>
 
             <div className="relative my-4 text-center">
@@ -172,7 +181,7 @@ export const AuthPages: React.FC = () => {
           <div className="space-y-4">
             <div className="text-center">
               <h2 className="text-sm font-bold text-neutral-900 dark:text-white">Cashier PIN Authentication</h2>
-              <p className="text-[11px] text-neutral-400 mt-0.5">Quick numeric keypad for touch terminals (Hint: 1234 or 9999)</p>
+              <p className="text-[11px] text-neutral-400 mt-0.5">Quick numeric keypad for touch terminals</p>
 
               {/* PIN Dots */}
               <div className="my-4 flex justify-center gap-3">
@@ -220,23 +229,19 @@ export const AuthPages: React.FC = () => {
           <div className="space-y-4 text-xs">
             <h3 className="font-bold text-neutral-900 dark:text-white">Reset Terminal Password</h3>
             <p className="text-neutral-500">
-              Enter your registered manager email address to receive password reset credentials.
+              Password self-service reset is not available yet.
             </p>
-            <input
-              type="email"
-              placeholder="manager@ybinventory.local"
-              className="w-full rounded border border-neutral-300 p-2 dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
-            />
-            <button
-              onClick={() => { showToast('Reset instructions sent to manager email', 'info'); setAuthMode('LOGIN'); }}
-              className="w-full rounded-lg bg-neutral-900 py-2.5 font-bold text-white hover:bg-neutral-800"
-            >
-              Send Reset Link
-            </button>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+              <strong className="font-bold">TODO(phase-2): password recovery.</strong>
+              <span className="mt-1 block text-amber-800/90 dark:text-amber-100/80">
+                Ask an owner/admin to reset the account from the Users screen, or ask a
+                developer to reset it on the Pi.
+              </span>
+            </div>
             <button
               type="button"
               onClick={() => setAuthMode('LOGIN')}
-              className="w-full text-center text-neutral-500 hover:underline"
+              className="w-full rounded-lg bg-neutral-900 py-2.5 font-bold text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-950"
             >
               Back to Login
             </button>

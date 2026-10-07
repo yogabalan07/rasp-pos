@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, UserRole, SystemStatus, Branch, AppNotification } from '../types';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { User, SystemStatus, Branch, AppNotification } from '../types';
 import { authService } from '../services/auth';
 import { syncService } from '../services/sync';
+import { UNAUTHORIZED_EVENT } from '../services/api';
 import { INITIAL_BRANCHES, INITIAL_NOTIFICATIONS } from '../data/mockData';
 
 interface ToastItem {
@@ -11,8 +12,11 @@ interface ToastItem {
 }
 
 interface AppContextType {
-  currentUser: User;
-  switchRole: (role: UserRole) => void;
+  /** null while signed out — the shell renders the login screen instead. */
+  currentUser: User | null;
+  authLoading: boolean;
+  refreshUser: () => Promise<void>;
+  logout: () => Promise<void>;
   systemStatus: SystemStatus;
   toggleSimulateOffline: () => Promise<void>;
   triggerManualSync: () => Promise<void>;
@@ -33,7 +37,8 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<User>(() => authService.getCurrentUser());
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [systemStatus, setSystemStatus] = useState<SystemStatus>(() => syncService.getStatus());
   const [branches] = useState<Branch[]>(INITIAL_BRANCHES);
   const [currentBranch, setCurrentBranch] = useState<Branch>(INITIAL_BRANCHES[0]);
@@ -41,18 +46,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeRoute, setActiveRoute] = useState<string>('/pos');
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
+  const showToast = useCallback(
+    (message: string, type: ToastItem['type'] = 'success') => {
+      const id = `toast-${Date.now()}-${Math.random()}`;
+      setToasts(prev => [...prev.slice(-3), { id, message, type }]);
+      setTimeout(() => {
+        setToasts(prev => prev.filter(t => t.id !== id));
+      }, 3800);
+    },
+    [],
+  );
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const res = await authService.fetchSession();
+      setCurrentUser(res.data);
+    } catch {
+      setCurrentUser(null);
+      showToast('Unable to reach local POS server.', 'error');
+    }
+  }, [showToast]);
+
+  const logout = useCallback(async () => {
+    await authService.logout();
+    setCurrentUser(null);
+    setActiveRoute('/pos');
+    showToast('Signed out', 'info');
+  }, [showToast]);
+
+  // Restore the HttpOnly session cookie on boot.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await refreshUser();
+      if (!cancelled) setAuthLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshUser]);
+
+  // The API layer broadcasts this when the server answers 401.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      authService.clearSession();
+      setCurrentUser(prev => {
+        if (prev) showToast('Session expired. Please sign in again.', 'warning');
+        return null;
+      });
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+  }, [showToast]);
+
   useEffect(() => {
     const unsubscribe = syncService.subscribe((status) => {
       setSystemStatus(status);
     });
     return unsubscribe;
   }, []);
-
-  const switchRole = (role: UserRole) => {
-    const newUser = authService.switchRole(role);
-    setCurrentUser(newUser);
-    showToast(`Role switched to ${role}`, 'info');
-  };
 
   const toggleSimulateOffline = async () => {
     if (systemStatus.isSimulatedOffline) {
@@ -88,14 +140,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const showToast = (message: string, type: ToastItem['type'] = 'success') => {
-    const id = `toast-${Date.now()}-${Math.random()}`;
-    setToasts(prev => [...prev.slice(-3), { id, message, type }]);
-    setTimeout(() => {
-      dismissToast(id);
-    }, 3800);
-  };
-
   const dismissToast = (id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
@@ -106,7 +150,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     <AppContext.Provider
       value={{
         currentUser,
-        switchRole,
+        authLoading,
+        refreshUser,
+        logout,
         systemStatus,
         toggleSimulateOffline,
         triggerManualSync,

@@ -1,20 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Customer } from '../../types';
-import { Search, UserPlus, Check, X, Phone, UserCheck } from 'lucide-react';
+import { Search, UserPlus, Check, X, Phone, ShieldAlert } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { customersService, CustomerInput } from '../../services/customers';
+import { authService } from '../../services/auth';
+import { ApiError } from '../../services/api';
 
 interface CustomerSelectModalProps {
   isOpen: boolean;
-  customers: Customer[];
   selectedCustomerId?: string;
   onClose: () => void;
   onSelectCustomer: (customer: Customer) => void;
-  onCreateCustomer: (customer: Omit<Customer, 'id' | 'totalBills' | 'totalSpent' | 'loyaltyPoints'>) => Promise<void>;
+  /** Must throw on failure so the quick-add form stays open with the error. */
+  onCreateCustomer: (customer: CustomerInput) => Promise<void>;
 }
 
 export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({
   isOpen,
-  customers,
   selectedCustomerId,
   onClose,
   onSelectCustomer,
@@ -22,18 +24,45 @@ export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({
 }) => {
   const { showToast } = useApp();
   const [search, setSearch] = useState('');
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [newAddress, setNewAddress] = useState('');
   const [newLimit, setNewLimit] = useState('5000');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const canCreate = authService.can('customer:write');
+
+  // Server-side search over ACTIVE customers (inactive ones cannot take
+  // sales, so the till never sees them). Debounced so typing stays snappy.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setIsLoading(true);
+      try {
+        const res = await customersService.getAll({
+          active: true,
+          q: search.trim() || undefined,
+        });
+        if (!cancelled) setCustomers(res.data);
+      } catch (err) {
+        if (!cancelled) {
+          showToast(err instanceof ApiError ? err.message : 'Unable to load customers', 'error');
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }, search.trim() ? 250 : 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isOpen, search, showToast]);
 
   if (!isOpen) return null;
-
-  const filtered = customers.filter(c => 
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.phone.includes(search)
-  );
 
   const handleAddNew = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,17 +70,23 @@ export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({
       showToast('Name and phone are required', 'warning');
       return;
     }
-    await onCreateCustomer({
-      name: newName.trim(),
-      phone: newPhone.trim(),
-      address: newAddress.trim() || undefined,
-      creditLimit: parseFloat(newLimit) || 5000,
-      outstandingBalance: 0,
-    });
-    setShowAddForm(false);
-    setNewName('');
-    setNewPhone('');
-    setNewAddress('');
+    setIsSaving(true);
+    try {
+      await onCreateCustomer({
+        name: newName.trim(),
+        phone: newPhone.trim(),
+        address: newAddress.trim() || undefined,
+        creditLimit: parseFloat(newLimit) || 5000,
+      });
+      setShowAddForm(false);
+      setNewName('');
+      setNewPhone('');
+      setNewAddress('');
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Could not create customer', 'error');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -61,7 +96,7 @@ export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({
         <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3.5 dark:border-neutral-800">
           <div>
             <h2 className="text-base font-bold text-neutral-900 dark:text-white">Select Customer (F3)</h2>
-            <p className="text-xs text-neutral-500">Attach customer to current bill for loyalty &amp; khata credit</p>
+            <p className="text-xs text-neutral-500">Attach a customer to this bill for khata credit</p>
           </div>
           <button onClick={onClose} className="rounded-md p-1 text-neutral-400 hover:text-neutral-700 dark:hover:text-white">
             <X className="h-4 w-4" />
@@ -76,23 +111,25 @@ export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search by customer name or phone..."
+              placeholder="Search by name, phone or code..."
               autoFocus
               className="w-full rounded-lg border border-neutral-300 bg-neutral-50 pl-9 pr-3 py-2 text-xs focus:bg-white focus:border-neutral-900 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:focus:bg-neutral-900 dark:text-white"
             />
           </div>
 
-          <button
-            onClick={() => setShowAddForm(!showAddForm)}
-            className="flex items-center gap-1 rounded-lg bg-neutral-900 px-3 py-2 text-xs font-semibold text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-950"
-          >
-            <UserPlus className="h-3.5 w-3.5" />
-            <span>{showAddForm ? 'Cancel' : 'New'}</span>
-          </button>
+          {canCreate && (
+            <button
+              onClick={() => setShowAddForm(!showAddForm)}
+              className="flex items-center gap-1 rounded-lg bg-neutral-900 px-3 py-2 text-xs font-semibold text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-950"
+            >
+              <UserPlus className="h-3.5 w-3.5" />
+              <span>{showAddForm ? 'Cancel' : 'New'}</span>
+            </button>
+          )}
         </div>
 
         {/* Add Customer Form */}
-        {showAddForm && (
+        {showAddForm && canCreate && (
           <form onSubmit={handleAddNew} className="p-4 bg-neutral-50 border-b border-neutral-200 dark:bg-neutral-800/40 dark:border-neutral-700 space-y-3">
             <h3 className="text-xs font-bold text-neutral-900 dark:text-white">Quick Add Customer</h3>
             <div className="grid grid-cols-2 gap-2">
@@ -105,7 +142,7 @@ export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({
               />
               <input
                 type="text"
-                placeholder="Phone (10 digits) *"
+                placeholder="Phone (7-15 digits) *"
                 value={newPhone}
                 onChange={e => setNewPhone(e.target.value)}
                 className="rounded border border-neutral-300 p-2 text-xs bg-white dark:border-neutral-700 dark:bg-neutral-900 dark:text-white"
@@ -129,66 +166,100 @@ export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({
             </div>
             <button
               type="submit"
-              className="w-full rounded bg-emerald-600 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+              disabled={isSaving}
+              className="w-full rounded bg-emerald-600 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
             >
-              Save &amp; Select Customer
+              {isSaving ? 'Saving…' : 'Save & Select Customer'}
             </button>
           </form>
         )}
 
+        {!canCreate && (
+          <p className="px-5 pt-3 text-[11px] text-neutral-500">
+            Ask an admin to add new customers — this terminal has view-only access.
+          </p>
+        )}
+
         {/* Customer List */}
         <div className="flex-1 overflow-y-auto p-2 divide-y divide-neutral-100 dark:divide-neutral-800">
-          {filtered.map(c => {
-            const isSelected = c.id === selectedCustomerId;
-            return (
-              <div
-                key={c.id}
-                onClick={() => {
-                  onSelectCustomer(c);
-                  onClose();
-                }}
-                className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
-                  isSelected
-                    ? 'bg-neutral-100 dark:bg-neutral-800 font-semibold'
-                    : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/50'
-                }`}
-              >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-neutral-900 dark:text-white">{c.name}</span>
-                    {c.loyaltyPoints > 0 && (
-                      <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 rounded font-mono">
-                        {c.loyaltyPoints} pts
+          {isLoading && customers.length === 0 ? (
+            <p className="p-6 text-center text-xs text-neutral-400">Loading customers…</p>
+          ) : customers.length === 0 ? (
+            <div className="p-6 text-center">
+              <p className="text-xs font-semibold text-neutral-600 dark:text-neutral-300">
+                {search ? `No customer matches "${search}"` : 'No active customers yet'}
+              </p>
+              {canCreate && !search && (
+                <button
+                  onClick={() => setShowAddForm(true)}
+                  className="mt-2 text-xs font-semibold text-emerald-700 hover:underline"
+                >
+                  Add the first customer
+                </button>
+              )}
+            </div>
+          ) : (
+            customers.map(c => {
+              const isSelected = c.id === selectedCustomerId;
+              return (
+                <div
+                  key={c.id}
+                  onClick={() => {
+                    onSelectCustomer(c);
+                    onClose();
+                  }}
+                  className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
+                    isSelected
+                      ? 'bg-neutral-100 dark:bg-neutral-800 font-semibold'
+                      : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/50'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-neutral-900 dark:text-white">{c.name}</span>
+                      {c.code && (
+                        <span className="font-mono text-[10px] text-neutral-400">{c.code}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 text-[11px] text-neutral-500 mt-0.5">
+                      <span className="flex items-center gap-1 font-mono">
+                        <Phone className="h-3 w-3" />
+                        {c.phone}
                       </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3 text-[11px] text-neutral-500 mt-0.5">
-                    <span className="flex items-center gap-1 font-mono">
-                      <Phone className="h-3 w-3 text-neutral-400" />
-                      {c.phone}
-                    </span>
-                    {c.outstandingBalance > 0 && (
-                      <span className="text-red-600 font-semibold font-tabular">
-                        Khata Due: ₹{c.outstandingBalance.toFixed(2)}
+                      {c.outstandingBalance > 0 ? (
+                        <span className="text-red-600 font-semibold font-tabular">
+                          Khata Due: ₹{c.outstandingBalance.toFixed(2)}
+                        </span>
+                      ) : (
+                        <span className="text-emerald-700 font-tabular">No dues</span>
+                      )}
+                      <span className="font-tabular text-neutral-400">
+                        Limit ₹{c.creditLimit.toFixed(0)}
                       </span>
-                    )}
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex items-center gap-2">
-                  {isSelected ? (
-                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white">
-                      <Check className="h-3 w-3" />
-                    </span>
-                  ) : (
-                    <button className="text-xs font-medium text-neutral-500 hover:text-neutral-900 dark:hover:text-white">
-                      Select
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {isSelected ? (
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white">
+                        <Check className="h-3 w-3" />
+                      </span>
+                    ) : (
+                      <button className="text-xs font-medium text-neutral-500 hover:text-neutral-900 dark:hover:text-white">
+                        Select
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
+          {!isLoading && customers.length > 0 && search && (
+            <p className="p-3 text-center text-[11px] text-neutral-400">
+              <ShieldAlert className="mx-auto mb-1 h-3.5 w-3.5" />
+              Inactive customers are hidden from the till.
+            </p>
+          )}
         </div>
       </div>
     </div>

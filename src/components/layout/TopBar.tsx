@@ -16,12 +16,11 @@ import {
   Smartphone
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { UserRole } from '../../types';
 
 export const TopBar: React.FC = () => {
   const { 
     currentUser, 
-    switchRole, 
+    logout,
     systemStatus, 
     toggleSimulateOffline, 
     triggerManualSync,
@@ -39,7 +38,10 @@ export const TopBar: React.FC = () => {
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [notifDropdownOpen, setNotifDropdownOpen] = useState(false);
 
-  const roles: UserRole[] = ['OWNER', 'ADMIN', 'MANAGER', 'CASHIER', 'INVENTORY_MANAGER', 'ACCOUNTANT'];
+  const handleSignOut = async () => {
+    setRoleDropdownOpen(false);
+    await logout();
+  };
 
   return (
     <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-neutral-200 bg-white px-4 text-neutral-800 shadow-xs dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100">
@@ -240,13 +242,13 @@ export const TopBar: React.FC = () => {
           )}
         </div>
 
-        {/* User Role Switcher Dropdown */}
+        {/* User Menu */}
         <div className="relative">
           <button
             onClick={() => { setRoleDropdownOpen(!roleDropdownOpen); setBranchDropdownOpen(false); setNotifDropdownOpen(false); }}
             className="flex items-center gap-2 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs font-medium text-neutral-800 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
           >
-            {currentUser.avatarUrl ? (
+            {currentUser?.avatarUrl ? (
               <img 
                 src={currentUser.avatarUrl} 
                 alt={currentUser.name} 
@@ -255,12 +257,16 @@ export const TopBar: React.FC = () => {
               />
             ) : (
               <div className="flex h-5 w-5 items-center justify-center rounded-full bg-neutral-700 text-[10px] text-white">
-                {currentUser.name.charAt(0)}
+                {(currentUser?.name || '?').charAt(0)}
               </div>
             )}
             <div className="text-left hidden sm:block">
-              <span className="block text-[11px] font-bold leading-none">{currentUser.name.split(' ')[0]}</span>
-              <span className="block text-[9px] text-neutral-500 uppercase tracking-wider">{currentUser.role}</span>
+              <span className="block text-[11px] font-bold leading-none">
+                {currentUser?.name || 'Not signed in'}
+              </span>
+              <span className="block text-[9px] text-neutral-500 uppercase tracking-wider">
+                {currentUser?.role || ''}
+              </span>
             </div>
             <ChevronDown className="h-3 w-3 text-neutral-400" />
           </button>
@@ -268,36 +274,37 @@ export const TopBar: React.FC = () => {
           {roleDropdownOpen && (
             <div className="absolute right-0 mt-1 w-56 rounded-md border border-neutral-200 bg-white p-1.5 shadow-lg dark:border-neutral-700 dark:bg-neutral-800 z-50">
               <div className="px-2 py-1 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">
-                Switch Role (Demo)
+                Signed in as
               </div>
-              {roles.map(r => (
-                <button
-                  key={r}
-                  onClick={() => {
-                    switchRole(r);
-                    setRoleDropdownOpen(false);
-                  }}
-                  className={`flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs text-left transition-colors ${
-                    currentUser.role === r 
-                      ? 'bg-neutral-100 font-semibold text-neutral-900 dark:bg-neutral-700 dark:text-white' 
-                      : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-700/50'
-                  }`}
-                >
-                  <span>{r.replace('_', ' ')}</span>
-                  {currentUser.role === r && <Check className="h-3.5 w-3.5 text-emerald-600" />}
-                </button>
-              ))}
+              <div className="px-2 py-1.5">
+                <p className="text-xs font-bold text-neutral-900 dark:text-white">
+                  {currentUser?.name || 'Guest'}
+                </p>
+                <p className="text-[11px] text-neutral-500">
+                  {currentUser?.email || 'No account'}
+                </p>
+                <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
+                  {currentUser?.role || ''} &middot; {currentUser?.branchName || ''}
+                </p>
+              </div>
 
               <div className="border-t border-neutral-100 my-1 dark:border-neutral-700" />
               <button
                 onClick={() => {
-                  navigateTo('/login');
+                  navigateTo('/settings');
                   setRoleDropdownOpen(false);
                 }}
                 className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-700"
               >
+                <Shield className="h-3.5 w-3.5" />
+                <span>Account &amp; Security</span>
+              </button>
+              <button
+                onClick={handleSignOut}
+                className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-700"
+              >
                 <LogOut className="h-3.5 w-3.5" />
-                <span>Lock / Cashier PIN Screen</span>
+                <span>Sign Out</span>
               </button>
             </div>
           )}

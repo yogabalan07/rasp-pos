@@ -5,7 +5,6 @@ import {
   QrCode, 
   CreditCard, 
   FileText, 
-  Layers, 
   Check, 
   X, 
   ArrowRight,
@@ -16,12 +15,16 @@ interface PaymentModalProps {
   isOpen: boolean;
   totalAmount: number;
   customer: Customer;
+  /** True while the checkout request is in flight — blocks resubmits. */
+  isProcessing?: boolean;
   onClose: () => void;
   onComplete: (details: {
     method: PaymentMethod;
     amountReceived: number;
     changeDue: number;
     notes?: string;
+    /** CARD terminal approval code (optional). */
+    reference?: string;
   }) => void;
 }
 
@@ -29,23 +32,27 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   isOpen,
   totalAmount,
   customer,
+  isProcessing = false,
   onClose,
   onComplete,
 }) => {
   const [method, setMethod] = useState<PaymentMethod>('CASH');
   const [tenderedInput, setTenderedInput] = useState<string>(Math.round(totalAmount).toString());
-  const [splitCash, setSplitCash] = useState<string>('0');
-  const [splitUpi, setSplitUpi] = useState<string>('0');
   const [cardRef, setCardRef] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
 
   useEffect(() => {
     if (isOpen) {
       setTenderedInput(Math.round(totalAmount).toString());
-      setSplitCash(Math.floor(totalAmount / 2).toString());
-      setSplitUpi((totalAmount - Math.floor(totalAmount / 2)).toString());
     }
   }, [isOpen, totalAmount]);
+
+  // Walk-in customers have no khata — never leave CREDIT stuck on them.
+  useEffect(() => {
+    if (customer.id === 'cust-walkin' && method === 'CREDIT') {
+      setMethod('CASH');
+    }
+  }, [customer.id, method]);
 
   if (!isOpen) return null;
 
@@ -61,10 +68,21 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     2000,
   ].filter((v, i, a) => v >= totalAmount && a.indexOf(v) === i).slice(0, 4);
 
+  const isWalkIn = customer.id === 'cust-walkin';
+  const availableCredit = Math.max(0, customer.creditLimit - customer.outstandingBalance);
+  const creditExceedsLimit =
+    method === 'CREDIT' && customer.creditLimit > 0 && customer.outstandingBalance + totalAmount > customer.creditLimit;
+  const creditDisabled =
+    method === 'CREDIT' && (customer.creditLimit <= 0 || creditExceedsLimit);
+
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (isProcessing) return;
     if (method === 'CASH' && tendered < totalAmount) {
       return; // Cannot pay less than total for cash
+    }
+    if (creditDisabled) {
+      return; // UX guard only — the server enforces the credit limit.
     }
 
     onComplete({
@@ -72,6 +90,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       amountReceived: method === 'CASH' ? tendered : totalAmount,
       changeDue: method === 'CASH' ? changeDue : 0,
       notes,
+      reference: method === 'CARD' && cardRef.trim() ? cardRef.trim() : undefined,
     });
   };
 
@@ -92,22 +111,30 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         {/* Content */}
         <div className="p-5 space-y-4">
           {/* Method Selector Tabs */}
-          <div className="grid grid-cols-5 gap-2">
+          {/* No split payments — the API accepts one payment method per bill
+              (CASH / UPI / CARD / CREDIT). */}
+          <div className="grid grid-cols-4 gap-2">
             {[
               { id: 'CASH', label: 'Cash', icon: Banknote },
               { id: 'UPI', label: 'UPI / QR', icon: QrCode },
               { id: 'CARD', label: 'Card', icon: CreditCard },
               { id: 'CREDIT', label: 'Khata', icon: FileText },
-              { id: 'SPLIT', label: 'Split', icon: Layers },
             ].map(m => {
               const Icon = m.icon;
               const isSelected = method === m.id;
+              const creditBlocked = m.id === 'CREDIT' && isWalkIn;
               return (
                 <button
                   key={m.id}
                   type="button"
                   onClick={() => setMethod(m.id as PaymentMethod)}
-                  className={`flex flex-col items-center justify-center rounded-lg p-2.5 text-xs font-semibold transition-all border ${
+                  disabled={isProcessing || creditBlocked}
+                  title={
+                    creditBlocked
+                      ? 'Credit sales need a selected customer (F3) — walk-in has no khata'
+                      : undefined
+                  }
+                  className={`flex flex-col items-center justify-center rounded-lg p-2.5 text-xs font-semibold transition-all border disabled:opacity-50 disabled:cursor-not-allowed ${
                     isSelected
                       ? 'border-neutral-900 bg-neutral-900 text-white shadow-xs dark:border-white dark:bg-white dark:text-neutral-950'
                       : 'border-neutral-200 bg-neutral-50 text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200'
@@ -119,6 +146,13 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               );
             })}
           </div>
+
+          {/* Walk-in has no khata — spell out what the cashier must do. */}
+          {isWalkIn && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-200">
+              Select a customer for credit sale. (F3)
+            </p>
+          )}
 
           {/* CASH Panel */}
           {method === 'CASH' && (
@@ -211,43 +245,37 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                   <span>Credit Limit:</span>
                   <span className="font-bold font-tabular">₹{customer.creditLimit.toFixed(2)}</span>
                 </div>
+                <div className="flex justify-between">
+                  <span>Available Credit:</span>
+                  <span className="font-bold font-tabular">₹{availableCredit.toFixed(2)}</span>
+                </div>
                 <div className="flex justify-between border-t border-amber-200/80 pt-1 text-amber-950 dark:text-amber-100 font-bold">
                   <span>New Outstanding:</span>
                   <span className="font-tabular">₹{(customer.outstandingBalance + totalAmount).toFixed(2)}</span>
                 </div>
               </div>
+
+              {customer.creditLimit <= 0 ? (
+                <p className="rounded border border-red-300 bg-red-50 p-2 text-xs font-semibold text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                  This customer has no credit limit (₹0) — credit sales are disabled. Collect another
+                  tender or raise the limit in Customers.
+                </p>
+              ) : creditExceedsLimit ? (
+                <p className="rounded border border-red-300 bg-red-50 p-2 text-xs font-semibold text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                  ₹{(customer.outstandingBalance + totalAmount).toFixed(2)} exceeds this customer's
+                  credit limit of ₹{customer.creditLimit.toFixed(2)} by{' '}
+                  ₹{(customer.outstandingBalance + totalAmount - customer.creditLimit).toFixed(2)}.
+                  Take part payment or reduce the bill — the server will reject this sale.
+                </p>
+              ) : (
+                <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                  ₹{availableCredit.toFixed(2)} of headroom remains after this sale.
+                </p>
+              )}
             </div>
           )}
 
-          {/* SPLIT Panel */}
-          {method === 'SPLIT' && (
-            <div className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50/50 p-4 dark:border-neutral-800 dark:bg-neutral-800/40">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-semibold">Cash Portion (₹)</label>
-                  <input
-                    type="number"
-                    value={splitCash}
-                    onChange={e => setSplitCash(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-neutral-300 bg-white p-2 text-sm font-bold font-tabular dark:border-neutral-700 dark:bg-neutral-900 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold">UPI / Online (₹)</label>
-                  <input
-                    type="number"
-                    value={splitUpi}
-                    onChange={e => setSplitUpi(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-neutral-300 bg-white p-2 text-sm font-bold font-tabular dark:border-neutral-700 dark:bg-neutral-900 dark:text-white"
-                  />
-                </div>
-              </div>
-              <div className="flex justify-between text-xs text-neutral-500">
-                <span>Sum: ₹{(parseFloat(splitCash || '0') + parseFloat(splitUpi || '0')).toFixed(2)}</span>
-                <span>Required: ₹{totalAmount.toFixed(2)}</span>
-              </div>
-            </div>
-          )}
+          {/* SPLIT payments removed — one tender per bill. */}
         </div>
 
         {/* Modal Footer */}
@@ -255,7 +283,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg border border-neutral-300 px-4 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            disabled={isProcessing}
+            className="rounded-lg border border-neutral-300 px-4 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
           >
             Cancel (ESC)
           </button>
@@ -263,11 +292,15 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           <button
             type="button"
             onClick={() => handleSubmit()}
-            disabled={method === 'CASH' && tendered < totalAmount}
+            disabled={isProcessing || (method === 'CASH' && tendered < totalAmount) || creditDisabled}
             className="flex items-center gap-2 rounded-lg bg-emerald-600 px-6 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
           >
-            <span>Complete Payment ₹{totalAmount.toFixed(2)}</span>
-            <ArrowRight className="h-4 w-4" />
+            <span>
+              {isProcessing
+                ? 'Processing…'
+                : `Complete Payment ₹${totalAmount.toFixed(2)}`}
+            </span>
+            {!isProcessing && <ArrowRight className="h-4 w-4" />}
           </button>
         </div>
       </div>

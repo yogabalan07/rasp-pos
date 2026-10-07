@@ -56,6 +56,7 @@ export interface Product {
   brand: string;
   categoryId: string;
   categoryName: string;
+  subcategory?: string;
   unit: string;
   hsn: string;
   gstRate: number; // e.g. 5, 12, 18, 28
@@ -94,6 +95,8 @@ export interface CartItem {
   unitPrice: number;
   discountPercent: number;
   discountAmount: number;
+  /** How the discount was entered: percent of the line, or fixed rupees. */
+  discountType?: 'PERCENT' | 'FIXED';
   gstRate: number;
   gstAmount: number;
   total: number;
@@ -112,17 +115,26 @@ export interface PaymentSplit {
 
 export interface Customer {
   id: string;
+  /** Server-assigned khata code (CUST-0001). */
+  code?: string;
   name: string;
   phone: string;
   email?: string;
   address?: string;
   gstin?: string;
+  /** Rupees owed - always derived from the server-side customer ledger. */
   outstandingBalance: number;
+  /** Rupees credit ceiling (0 = credit sales disabled for this customer). */
   creditLimit: number;
-  loyaltyPoints: number;
+  /** Rupees still available under the limit (server-computed). */
+  availableCredit?: number;
+  /** Inactive customers are hidden from the POS and cannot take credit. */
+  active?: boolean;
   totalBills: number;
+  /** Rupees billed across all completed sales (server-computed). */
   totalSpent: number;
   lastPurchaseDate?: string;
+  notes?: string;
 }
 
 export interface Sale {
@@ -156,15 +168,21 @@ export interface Sale {
 
 export interface Supplier {
   id: string;
+  /** Server-assigned vendor code (SUPP-0001). */
+  code?: string;
   name: string;
   gstin: string;
   phone: string;
   email: string;
   address: string;
   creditLimit: number;
+  /** Rupees payable to this supplier (server-derived from the payable ledger). */
   outstandingBalance: number;
   paymentTerms: string;
   contactPerson: string;
+  /** Inactive vendors cannot be used for new transactions. */
+  active?: boolean;
+  notes?: string;
 }
 
 export interface PurchaseItem {
@@ -198,7 +216,14 @@ export interface StockMovement {
   productId: string;
   productName: string;
   sku: string;
-  type: 'PURCHASE' | 'SALE' | 'RETURN' | 'ADJUSTMENT' | 'TRANSFER_IN' | 'TRANSFER_OUT';
+  type:
+    | 'OPENING_STOCK'
+    | 'PURCHASE'
+    | 'SALE'
+    | 'RETURN'
+    | 'ADJUSTMENT'
+    | 'TRANSFER_IN'
+    | 'TRANSFER_OUT';
   quantityDelta: number;
   previousStock: number;
   newStock: number;

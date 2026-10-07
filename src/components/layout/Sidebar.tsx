@@ -133,16 +133,17 @@ export const Sidebar: React.FC = () => {
 
   // Role filtering
   const isItemVisibleForRole = (item: NavItem): boolean => {
-    if (currentUser.role === 'OWNER' || currentUser.role === 'ADMIN' || currentUser.role === 'MANAGER') {
+    const role = currentUser?.role;
+    if (role === 'OWNER' || role === 'ADMIN' || role === 'MANAGER') {
       return true;
     }
-    if (currentUser.role === 'CASHIER') {
+    if (role === 'CASHIER') {
       return ['dashboard', 'pos', 'bills', 'returns', 'customers', 'cash', 'shifts', 'hardware', 'server'].includes(item.id);
     }
-    if (currentUser.role === 'INVENTORY_MANAGER') {
+    if (role === 'INVENTORY_MANAGER') {
       return ['dashboard', 'products', 'inventory', 'batches', 'warehouses', 'audit', 'purchases', 'suppliers', 'server', 'sync'].includes(item.id);
     }
-    if (currentUser.role === 'ACCOUNTANT') {
+    if (role === 'ACCOUNTANT') {
       return ['dashboard', 'bills', 'customers', 'credit', 'suppliers', 'gst', 'invoices', 'cash', 'shifts', 'reports', 'analytics'].includes(item.id);
     }
     return true;
@@ -231,7 +232,7 @@ export const Sidebar: React.FC = () => {
           </div>
           <div className="flex items-center justify-between mt-1 text-[10px]">
             <span>Active Role</span>
-            <span className="font-semibold text-neutral-900 dark:text-white">{currentUser.role}</span>
+            <span className="font-semibold text-neutral-900 dark:text-white">{currentUser?.role ?? '-'}</span>
           </div>
         </div>
       )}
